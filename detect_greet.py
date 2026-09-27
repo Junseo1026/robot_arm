@@ -37,6 +37,34 @@ def _up(kp, conf, side):
     return kp[w][1] < kp[sh][1]
 
 
+def metrics(kp, conf):
+    """제스처를 가르는 기하 지표. 모두 어깨 폭으로 정규화해 거리에 무관하게 만든다.
+
+    forearm: 전완(팔꿈치-손목) 길이 / 어깨 폭.
+        카메라 쪽으로 손을 내밀면 전완이 카메라 축과 나란해져 화면상 짧아진다.
+        좌우로 흔드는 손은 카메라와 수직이라 제 길이로 보인다.
+    wrist_up: (어깨 y - 손목 y) / 어깨 폭. 클수록 손이 머리 쪽으로 높다.
+    """
+    import numpy as np
+    ls, rs = COCO['l_shoulder'], COCO['r_shoulder']
+    if conf[ls] < KP_CONF or conf[rs] < KP_CONF:
+        return None
+    sw = float(np.linalg.norm(kp[ls] - kp[rs]))
+    if sw < 1e-3:
+        return None
+    out = {}
+    for side in ('l', 'r'):
+        e, w, sh = (COCO['%s_elbow' % side], COCO['%s_wrist' % side],
+                    COCO['%s_shoulder' % side])
+        if conf[e] < KP_CONF or conf[w] < KP_CONF:
+            continue
+        out[side] = {
+            'forearm': float(np.linalg.norm(kp[w] - kp[e])) / sw,
+            'wrist_up': float(kp[sh][1] - kp[w][1]) / sw,
+        }
+    return {'shoulder_px': sw, 'sides': out} if out else None
+
+
 def classify(kp, conf, waving):
     """키포인트로 포즈를 분류한다. (한글 라벨, 화면용 ASCII 라벨) 를 돌려준다."""
     l, r = _up(kp, conf, 'l'), _up(kp, conf, 'r')
@@ -165,6 +193,9 @@ def main():
                     help='화면 좌우 끝에 대응하는 J1 각도. 기본 45')
     ap.add_argument('--flip-j1', action='store_true',
                     help='좌우가 반대로 돌면 이 옵션을 준다')
+    ap.add_argument('--metrics', action='store_true',
+                    help='제스처 구분용 기하 지표를 출력한다. 하이파이브와 손 흔들기가 '
+                         '수치로 갈리는지 확인할 때 쓴다')
     ap.add_argument('--every', type=float, default=0.0,
                     help='분류값을 이 간격(초)마다 계속 출력. 0 이면 바뀔 때만 출력')
     args = ap.parse_args()
@@ -333,7 +364,20 @@ def main():
                             show_line = False
                     else:
                         show_line = last_label.get(tid) != label_ko
-                    if show_line:
+                    if show_line and args.metrics:
+                        m = metrics(kps[i], conf)
+                        if m is None:
+                            print('[%s] id=%-2d %-10s  어깨 키포인트 신뢰도 낮음'
+                                  % (time.strftime('%H:%M:%S'), tid, label_ko))
+                        else:
+                            parts = ['%s: 전완%.2f 손높이%+.2f' %
+                                     ('왼' if k == 'l' else '오른',
+                                      v['forearm'], v['wrist_up'])
+                                     for k, v in m['sides'].items()]
+                            print('[%s] id=%-2d %-10s  어깨폭%4.0fpx  %s  흔듦=%s'
+                                  % (time.strftime('%H:%M:%S'), tid, label_ko,
+                                     m['shoulder_px'], '  '.join(parts), waving))
+                    elif show_line:
                         lw, ls = COCO['l_wrist'], COCO['l_shoulder']
                         rw, rs = COCO['r_wrist'], COCO['r_shoulder']
                         print('[%s] id=%-2d %-10s  왼손목y=%4.0f(어깨%4.0f) '

@@ -37,7 +37,25 @@ python3 -m venv .venv
 
 ## 사용
 
-동작 확인:
+### 처음 실행할 때는 이 순서로
+
+```sh
+.venv/bin/python greet.py wave --dry-run       # 안 움직인다. 지나갈 자세만 검증해 출력
+.venv/bin/python greet.py wave --step          # 이동마다 Enter 확인 (s=건너뜀, q=중단)
+.venv/bin/python greet.py wave --speed 15      # 느리게 연속 실행
+.venv/bin/python greet.py wave                 # 확인 끝나면 기본 속도로
+```
+
+`--speed` 기본값은 20 deg/s로 낮게 잡아뒀다. 흔들기도 이 값을 따른다.
+
+### 멈추는 방법
+
+**Ctrl+C 만으로는 멈추지 않는다.** 컨트롤러 큐에 이미 쌓인 동작이 계속 실행된다.
+`greet.py`는 Ctrl+C 를 받으면 `emergency_stop()` 을 보내도록 해 뒀다. 정지 후에는
+`greet.py rest` 로 대기 자세부터 다시 잡아야 한다. 물리 비상정지 버튼과 UFactory Studio의
+정지 버튼이 항상 최종 수단이다.
+
+### 그 다음
 
 ```sh
 .venv/bin/python greet.py wave             # 손 흔들기

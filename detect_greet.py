@@ -15,7 +15,7 @@
 
 종료는 q 또는 Ctrl+C.
 """
-import argparse, collections, sys, time
+import argparse, collections, os, sys, time
 
 COCO = {'nose': 0, 'l_shoulder': 5, 'r_shoulder': 6,
         'l_elbow': 7, 'r_elbow': 8, 'l_wrist': 9, 'r_wrist': 10}
@@ -157,12 +157,22 @@ def main():
     from ultralytics import YOLO
 
     if args.list_cameras:
+        # 없는 인덱스를 열면 OpenCV 가 stderr 로 경고를 뱉는다. 잠시 막아둔다.
+        import contextlib
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        saved = os.dup(2)
+        os.dup2(devnull, 2)
         print('index  기본 해상도    최대 해상도     추정')
-        for i in range(5):
+        misses = 0
+        for i in range(8):
+            if misses >= 2:      # 연속 2개가 없으면 더 볼 필요가 없다
+                break
             c = cv2.VideoCapture(i)
             if not c.isOpened():
+                misses += 1
                 c.release()
                 continue
+            misses = 0
             ok, f = c.read()
             c.set(cv2.CAP_PROP_FRAME_WIDTH, 4056)
             c.set(cv2.CAP_PROP_FRAME_HEIGHT, 3040)
@@ -172,6 +182,9 @@ def main():
                   % (i, f.shape[1] if ok else 0, f.shape[0] if ok else 0,
                      mw, mh, guess))
             c.release()
+        os.dup2(saved, 2)
+        os.close(saved)
+        os.close(devnull)
         return
 
     cap = cv2.VideoCapture(args.camera)

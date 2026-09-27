@@ -6,10 +6,14 @@
 학습 모델보다 이 방식이 덜 깨지고 조명/복장 변화에도 강하다.
 
 먼저 로봇 없이 감지만 확인한다 (팔이 움직이지 않는다):
+  .venv/bin/python detect_greet.py --list-scenarios
+  .venv/bin/python detect_greet.py --scenario hello --show --robot
   .venv/bin/python detect_greet.py --list-cameras   # 어느 인덱스가 IMX477 인지 확인
   .venv/bin/python detect_greet.py --show
 
 확인이 끝나면 로봇을 붙인다:
+  .venv/bin/python detect_greet.py --list-scenarios
+  .venv/bin/python detect_greet.py --scenario hello --show --robot
   .venv/bin/python detect_greet.py --list-cameras   # 어느 인덱스가 IMX477 인지 확인
   .venv/bin/python detect_greet.py --show --robot --dry-run   # 연결만, 안 움직임
   .venv/bin/python detect_greet.py --show --robot --speed 20
@@ -136,30 +140,75 @@ def main():
                     help='트래커. 기본 ByteTrack. 카메라가 고정이라 BoT-SORT 의 '
                          'GMC(카메라 움직임 보정)가 필요 없고, OpenCV 5 에서 GMC 가 '
                          '깨져 경고를 쏟아낸다')
-    ap.add_argument('--conf', type=float, default=0.4, help='사람 검출 신뢰도')
+    ap.add_argument('--conf', type=float, help='사람 검출 신뢰도 (기본 0.4)')
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
     ap.add_argument('--show', action='store_true', help='영상 창 표시')
     ap.add_argument('--robot', action='store_true',
                     help='실제로 팔을 움직인다. 없으면 감지만 하고 출력만 한다')
-    ap.add_argument('--speed', type=float, default=20.0, help='관절 속도 deg/s')
-    ap.add_argument('--name', help='poses/<이름>.json 으로 인사 (생략하면 내장 인사)')
-    ap.add_argument('--trigger', choices=['wave', 'handup'], default='wave',
+    ap.add_argument('--speed', type=float, help='관절 속도 deg/s (기본 20)')
+    ap.add_argument('--name', help='<이름>.json 으로 인사 (생략하면 내장 인사)')
+    ap.add_argument('--scenario', help='scenarios/<이름>/scenario.json 을 읽어 '
+                                       '트리거와 동작, 파라미터를 적용한다')
+    ap.add_argument('--list-scenarios', action='store_true',
+                    help='시나리오 목록을 출력하고 종료')
+    ap.add_argument('--trigger', choices=['wave', 'handup'],
                     help='반응 조건. wave=손을 좌우로 흔들 때(기본), '
                          'handup=손만 들어도')
     ap.add_argument('--dry-run', action='store_true',
                     help='--robot 과 함께. 로봇에 연결은 하되 실제로 움직이지 않는다')
-    ap.add_argument('--hold', type=float, default=0.4,
-                    help='이 시간(초) 이상 조건이 유지되면 인사 (오검출 방지)')
-    ap.add_argument('--cooldown', type=float, default=8.0,
-                    help='같은 사람에게 다시 인사하기까지 최소 간격(초)')
-    ap.add_argument('--j1-span', type=float, default=45.0,
-                    help='화면 좌우 끝에 대응하는 J1 각도')
+    ap.add_argument('--hold', type=float,
+                    help='이 시간(초) 이상 조건이 유지되면 인사 (기본 0.4)')
+    ap.add_argument('--cooldown', type=float,
+                    help='같은 사람에게 다시 인사하기까지 최소 간격(초). 기본 8')
+    ap.add_argument('--j1-span', type=float,
+                    help='화면 좌우 끝에 대응하는 J1 각도. 기본 45')
     ap.add_argument('--flip-j1', action='store_true',
                     help='좌우가 반대로 돌면 이 옵션을 준다')
     ap.add_argument('--every', type=float, default=0.0,
                     help='분류값을 이 간격(초)마다 계속 출력. 0 이면 바뀔 때만 출력')
     args = ap.parse_args()
+
+    import json
+    root = os.path.dirname(os.path.abspath(__file__))
+    sdir = os.path.join(root, 'scenarios')
+
+    if args.list_scenarios:
+        if not os.path.isdir(sdir):
+            print('scenarios/ 가 없음')
+            return
+        for n in sorted(os.listdir(sdir)):
+            f = os.path.join(sdir, n, 'scenario.json')
+            if not os.path.exists(f):
+                continue
+            c = json.load(open(f))
+            print('%-12s %-22s 트리거=%-7s 동작=%s'
+                  % (n, c.get('title', ''), c.get('trigger', ''),
+                     c.get('motion', {}).get('name') or
+                     c.get('motion', {}).get('kind', '내장')))
+        return
+
+    # 시나리오 -> 내장 기본값 순으로 빈 값을 채운다 (CLI 로 준 값이 항상 이긴다)
+    cfg, params = {}, {}
+    if args.scenario:
+        f = os.path.join(sdir, args.scenario, 'scenario.json')
+        if not os.path.exists(f):
+            sys.exit('시나리오 %s 없음. --list-scenarios 로 확인해줘.' % args.scenario)
+        cfg = json.load(open(f))
+        params = cfg.get('params', {})
+        print('시나리오: %s — %s' % (cfg.get('name'), cfg.get('title', '')))
+        motion = cfg.get('motion', {})
+        if args.name is None and motion.get('type') == 'file':
+            args.name = motion.get('name')
+        if args.trigger is None:
+            args.trigger = cfg.get('trigger')
+
+    for key, default in (('conf', 0.4), ('speed', 20.0), ('hold', 0.4),
+                         ('cooldown', 8.0), ('j1_span', 45.0)):
+        if getattr(args, key) is None:
+            setattr(args, key, params.get(key, default))
+    if args.trigger is None:
+        args.trigger = 'wave'
 
     import cv2
     from ultralytics import YOLO

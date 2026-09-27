@@ -40,7 +40,22 @@ J1_LIMIT = 60.0                   # 사람 쪽으로 돌릴 수 있는 최대 �
 BLEND = 20.0                      # 흔들기 코너 블렌딩 반경(mm). 클수록 부드럽고 진폭이 줄어든다
 
 
-POSE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'poses')
+ROOT = os.path.dirname(os.path.abspath(__file__))
+POSE_DIR = os.path.join(ROOT, 'poses')
+SCENARIO_DIR = os.path.join(ROOT, 'scenarios')
+
+
+def pose_dirs():
+    """자세 파일을 찾을 디렉터리. 시나리오 폴더가 우선이다."""
+    dirs = []
+    if os.path.isdir(SCENARIO_DIR):
+        for n in sorted(os.listdir(SCENARIO_DIR)):
+            d = os.path.join(SCENARIO_DIR, n, 'poses')
+            if os.path.isdir(d):
+                dirs.append(d)
+    if os.path.isdir(POSE_DIR):
+        dirs.append(POSE_DIR)
+    return dirs
 
 
 def clamp(v, lo, hi):
@@ -52,10 +67,21 @@ def load_waypoints(name):
 
     jog.py 의 `w <이름>` 과 xarm_pose.py 가 저장하는 형식을 모두 읽는다.
     """
-    path = name if os.path.isabs(name) else os.path.join(POSE_DIR, name + '.json')
-    if not os.path.exists(path):
-        have = sorted(f[:-5] for f in os.listdir(POSE_DIR) if f.endswith('.json'))
-        raise FileNotFoundError('%s 없음. 저장된 동작: %s' % (path, ', '.join(have) or '(없음)'))
+    if os.path.isabs(name) or name.endswith('.json'):
+        path = name
+    else:
+        path = None
+        for d in pose_dirs():
+            cand = os.path.join(d, name + '.json')
+            if os.path.exists(cand):
+                path = cand
+                break
+    if path is None or not os.path.exists(path):
+        have = []
+        for d in pose_dirs():
+            have += [f[:-5] for f in os.listdir(d) if f.endswith('.json')]
+        raise FileNotFoundError('%s 없음. 저장된 동작: %s'
+                                % (name, ', '.join(sorted(set(have))) or '(없음)'))
     data = json.load(open(path))
     angles = [wp['angles'] for wp in data['waypoints']]
     if not angles:
@@ -272,12 +298,18 @@ def main():
     args = ap.parse_args()
 
     if args.list:
-        names = sorted(f[:-5] for f in os.listdir(POSE_DIR) if f.endswith('.json'))
-        for n in names:
-            a, rf = load_waypoints(n)
-            print('%-16s %2d개  repeat_from=%s' % (n, len(a), rf))
-        if not names:
-            print('poses/ 가 비어 있음. jog.py 에서 s 로 저장하고 w <이름> 으로 파일로 만들어줘.')
+        found = False
+        for d in pose_dirs():
+            names = sorted(f[:-5] for f in os.listdir(d) if f.endswith('.json'))
+            if not names:
+                continue
+            found = True
+            print('[%s]' % os.path.relpath(d, ROOT))
+            for n in names:
+                a, rf = load_waypoints(os.path.join(d, n + '.json'))
+                print('  %-16s %2d개  repeat_from=%s' % (n, len(a), rf))
+        if not found:
+            print('저장된 동작이 없음. jog.py 에서 s 로 저장하고 w <이름> 으로 파일로 만들어줘.')
         return
 
     g = Greeter(speed=args.speed,

@@ -1,0 +1,14 @@
+{
+  "name": "hello",
+  "title": "손 흔들면 인사",
+  "description": "관객이 카메라 앞에서 손을 좌우로 흔들면 팔을 들어 마주 인사한다. 워크바이 전시용.",
+  "trigger": "wave",
+  "motion": {"type": "file", "name": "hello"},
+  "params": {
+    "speed": 20,
+    "hold": 0.4,
+    "cooldown": 8.0,
+    "j1_span": 45.0,
+    "conf": 0.4
+  }
+}

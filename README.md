@@ -139,6 +139,25 @@ g.greet(name='hello')   # 티칭해 둔 동작
 100Hz로 보간점을 스트리밍해야 한다. 손 흔들기는 양 끝에서 방향을 바꾸므로 큐 방식으로도
 자연스럽고, `_wave_smooth()`가 (3)번 방식을 구현해 뒀다.
 
+## 시나리오
+
+동작 하나하나를 `scenarios/<이름>/` 에 모아둔다. 새 시나리오는 폴더를 하나 더 만들면 된다.
+
+```
+scenarios/hello/
+├── scenario.json      트리거, 사용할 동작, 파라미터
+├── poses/hello.json   티칭한 자세
+└── README.md
+```
+
+```sh
+.venv/bin/python detect_greet.py --list-scenarios
+.venv/bin/python detect_greet.py --scenario hello --show --robot
+```
+
+`scenario.json` 의 값이 기본값이 되고, 명령줄 옵션을 주면 그쪽이 이긴다.
+자세 파일은 `scenarios/*/poses/` 와 최상위 `poses/` 에서 찾는다.
+
 ## 사람 감지 — detect_greet.py
 
 **행동분류 모델을 학습시키지 않는다.** YOLO11-pose 로 키포인트를 뽑고 "손목이 어깨보다

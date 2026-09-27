@@ -146,8 +146,19 @@ g.greet(name='hello')   # 티칭해 둔 동작
 어깨 y 보다 작아진다. 학습 데이터도, 모델 관리도 필요 없고 조명·복장 변화에 강하다.
 흔드는 동작도 손목 x 좌표의 진동(방향 전환 횟수)으로 보므로 모델이 없다.
 
+분류값은 터미널에 계속 찍히고 화면에도 사람마다 라벨이 붙는다.
+
+| 분류 | 조건 |
+|---|---|
+| `서 있음` | 양 손목이 어깨보다 아래 |
+| `손 들기` | 한쪽 손목이 어깨보다 위 |
+| `손 흔들기` | 손 든 상태에서 손목 x 가 좌우로 진동 |
+| `양손 들기` | 양쪽 손목이 어깨보다 위 |
+| `판정불가` | 손목·어깨 키포인트 신뢰도가 0.5 미만 |
+
 ```sh
 .venv/bin/python detect_greet.py --show                  # 감지만. 팔이 안 움직인다
+.venv/bin/python detect_greet.py --show --every 0.5      # 0.5초마다 분류값 출력
 .venv/bin/python detect_greet.py --show --robot          # 로봇 연결
 .venv/bin/python detect_greet.py --robot --require-wave   # 흔들어야 반응
 ```

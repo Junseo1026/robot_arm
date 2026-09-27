@@ -19,6 +19,30 @@ COCO = {'nose': 0, 'l_shoulder': 5, 'r_shoulder': 6,
         'l_elbow': 7, 'r_elbow': 8, 'l_wrist': 9, 'r_wrist': 10}
 KP_CONF = 0.5          # 키포인트를 믿을 최소 신뢰도
 
+FONT_PATH = '/System/Library/Fonts/AppleSDGothicNeo.ttc'
+
+
+def _up(kp, conf, side):
+    """해당 쪽 손목이 어깨보다 위에 있는지. 신뢰도가 낮으면 None."""
+    w, sh = COCO['%s_wrist' % side], COCO['%s_shoulder' % side]
+    if conf[w] < KP_CONF or conf[sh] < KP_CONF:
+        return None
+    return kp[w][1] < kp[sh][1]
+
+
+def classify(kp, conf, waving):
+    """키포인트로 포즈를 분류한다. (한글 라벨, 화면용 ASCII 라벨) 를 돌려준다."""
+    l, r = _up(kp, conf, 'l'), _up(kp, conf, 'r')
+    if l is None and r is None:
+        return '판정불가', 'UNKNOWN'
+    if l and r:
+        return '양손 들기', 'BOTH HANDS UP'
+    if l or r:
+        if waving:
+            return '손 흔들기', 'WAVING'
+        return '손 들기', 'HAND UP'
+    return '서 있음', 'STANDING'
+
 
 def hand_raised(kp, conf):
     """손목이 어깨보다 위에 있으면 손을 든 것으로 본다.
@@ -69,6 +93,32 @@ class WaveWatcher:
         self.hist.pop(tid, None)
 
 
+_font_cache = {}
+
+
+def draw_label(frame, text, xy, color=(0, 255, 0), size=22):
+    """OpenCV 는 한글을 못 그리므로 PIL 로 그려 넣는다."""
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    if size not in _font_cache:
+        try:
+            _font_cache[size] = ImageFont.truetype(FONT_PATH, size)
+        except OSError:
+            _font_cache[size] = None
+    font = _font_cache[size]
+    if font is None:
+        cv2.putText(frame, text.encode('ascii', 'replace').decode(), xy,
+                    cv2.FONT_HERSHEY_SIMPLEX, size / 30, color, 2)
+        return frame
+    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    d = ImageDraw.Draw(img)
+    x, y = xy
+    d.text((x + 1, y + 1), text, font=font, fill=(0, 0, 0))
+    d.text((x, y), text, font=font, fill=color[::-1])
+    return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+
+
 def main():
     ap = argparse.ArgumentParser(description='사람이 손을 들면 인사')
     ap.add_argument('--camera', type=int, default=1, help='카메라 인덱스 (Arducam)')
@@ -91,6 +141,8 @@ def main():
                     help='화면 좌우 끝에 대응하는 J1 각도')
     ap.add_argument('--flip-j1', action='store_true',
                     help='좌우가 반대로 돌면 이 옵션을 준다')
+    ap.add_argument('--every', type=float, default=0.0,
+                    help='분류값을 이 간격(초)마다 계속 출력. 0 이면 바뀔 때만 출력')
     args = ap.parse_args()
 
     import cv2
@@ -115,6 +167,8 @@ def main():
         print('감지 전용 모드. 팔은 움직이지 않는다. 실제로 움직이려면 --robot 을 붙여줘.')
 
     watcher = WaveWatcher()
+    last_label = {}     # track id -> 마지막으로 출력한 분류값
+    last_print = 0.0
     since = {}          # track id -> 조건이 만족되기 시작한 시각
     last_greet = {}     # track id -> 마지막 인사 시각
     fps_t, fps_n, fps = time.time(), 0, 0.0
@@ -132,6 +186,7 @@ def main():
 
             target = None       # (면적, track id, j1 각도, 어느 손)
             seen = set()
+            labels = {}         # track id -> (한글 라벨, ASCII 라벨, 박스)
             if res.keypoints is not None and res.boxes is not None:
                 kps = res.keypoints.xy.cpu().numpy()
                 kcf = res.keypoints.conf
@@ -145,12 +200,36 @@ def main():
                     seen.add(tid)
                     conf = kcf[i] if kcf is not None else [1.0] * len(kps[i])
                     up, side, wrist = hand_raised(kps[i], conf)
+
+                    # 손을 들었을 때만 흔들림을 본다 (손목 x 진동)
+                    waving = (watcher.update(tid, wrist[0] / w, now)
+                              if up else False)
+                    label_ko, label_en = classify(kps[i], conf, waving)
+                    labels[tid] = (label_ko, label_en, boxes[i])
+
+                    # 터미널 출력: 바뀔 때만, 또는 --every 간격마다
+                    if args.every > 0:
+                        if now - last_print >= args.every:
+                            show_line = True
+                        else:
+                            show_line = False
+                    else:
+                        show_line = last_label.get(tid) != label_ko
+                    if show_line:
+                        lw, ls = COCO['l_wrist'], COCO['l_shoulder']
+                        rw, rs = COCO['r_wrist'], COCO['r_shoulder']
+                        print('[%s] id=%-2d %-10s  왼손목y=%4.0f(어깨%4.0f) '
+                              '오른손목y=%4.0f(어깨%4.0f) 흔듦=%s'
+                              % (time.strftime('%H:%M:%S'), tid, label_ko,
+                                 kps[i][lw][1], kps[i][ls][1],
+                                 kps[i][rw][1], kps[i][rs][1], waving))
+                    last_label[tid] = label_ko
+
                     if not up:
                         since.pop(tid, None)
                         continue
-                    if args.require_wave:
-                        if not watcher.update(tid, wrist[0] / w, now):
-                            continue
+                    if args.require_wave and not waving:
+                        continue
                     since.setdefault(tid, now)
                     if now - since[tid] < args.hold:
                         continue
@@ -163,9 +242,15 @@ def main():
                     if target is None or area > target[0]:
                         target = (area, tid, j1, side)
 
-            for tid in list(since):
+            if args.every > 0 and now - last_print >= args.every:
+                last_print = now
+                if not labels:
+                    print('[%s] 사람 없음' % time.strftime('%H:%M:%S'))
+
+            for tid in set(list(since) + list(last_label)):
                 if tid not in seen:
                     since.pop(tid, None)
+                    last_label.pop(tid, None)
                     watcher.forget(tid)
 
             if target:
@@ -187,8 +272,15 @@ def main():
 
             if args.show:
                 vis = res.plot()
-                cv2.putText(vis, '%.1f fps   %s' % (fps, '로봇 ON' if greeter else '감지 전용'),
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                for tid, (ko, en, box) in labels.items():
+                    x1, y1 = int(box[0]), int(box[1])
+                    color = (0, 255, 255) if ko in ('손 흔들기', '손 들기',
+                                                    '양손 들기') else (0, 255, 0)
+                    vis = draw_label(vis, 'id%d %s' % (tid, ko),
+                                     (x1, max(0, y1 - 28)), color)
+                vis = draw_label(vis, '%.1f fps   %s' %
+                                 (fps, '로봇 ON' if greeter else '감지 전용'),
+                                 (10, 8), (0, 255, 0))
                 cv2.imshow('detect_greet  (q=종료)', vis)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break

@@ -11,11 +11,12 @@
 
 확인이 끝나면 로봇을 붙인다:
   .venv/bin/python detect_greet.py --list-cameras   # 어느 인덱스가 IMX477 인지 확인
+  .venv/bin/python detect_greet.py --show --robot --dry-run   # 연결만, 안 움직임
   .venv/bin/python detect_greet.py --show --robot --speed 20
 
 종료는 q 또는 Ctrl+C.
 """
-import argparse, collections, os, sys, time
+import argparse, collections, os, sys, threading, time
 
 COCO = {'nose': 0, 'l_shoulder': 5, 'r_shoulder': 6,
         'l_elbow': 7, 'r_elbow': 8, 'l_wrist': 9, 'r_wrist': 10}
@@ -143,8 +144,11 @@ def main():
                     help='실제로 팔을 움직인다. 없으면 감지만 하고 출력만 한다')
     ap.add_argument('--speed', type=float, default=20.0, help='관절 속도 deg/s')
     ap.add_argument('--name', help='poses/<이름>.json 으로 인사 (생략하면 내장 인사)')
-    ap.add_argument('--require-wave', action='store_true',
-                    help='손만 든 게 아니라 좌우로 흔들어야 반응')
+    ap.add_argument('--trigger', choices=['wave', 'handup'], default='wave',
+                    help='반응 조건. wave=손을 좌우로 흔들 때(기본), '
+                         'handup=손만 들어도')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='--robot 과 함께. 로봇에 연결은 하되 실제로 움직이지 않는다')
     ap.add_argument('--hold', type=float, default=0.4,
                     help='이 시간(초) 이상 조건이 유지되면 인사 (오검출 방지)')
     ap.add_argument('--cooldown', type=float, default=8.0,
@@ -209,10 +213,25 @@ def main():
     greeter = None
     if args.robot:
         from greet import Greeter
-        greeter = Greeter(speed=args.speed)
-        print('로봇 연결됨. 대기 자세.')
+        greeter = Greeter(speed=args.speed, dry_run=args.dry_run)
+        print('로봇 연결됨%s' % (' (dry-run: 움직이지 않음)' if args.dry_run else '. 대기 자세.'))
     else:
         print('감지 전용 모드. 팔은 움직이지 않는다. 실제로 움직이려면 --robot 을 붙여줘.')
+
+    need_wave = (args.trigger == 'wave')
+    print('트리거: %s' % ('손을 좌우로 흔들 때' if need_wave else '손을 들 때'))
+
+    # 인사는 몇 초가 걸린다. 별도 스레드로 돌려 카메라 루프가 멈추지 않게 한다.
+    busy = threading.Event()
+    worker = [None]
+
+    def do_greet(j1, tid):
+        try:
+            greeter.greet(j1_deg=j1, name=args.name)
+        except Exception as e:
+            print('인사 중 오류: %s' % e)
+        finally:
+            busy.clear()
 
     watcher = WaveWatcher()
     last_label = {}     # track id -> 마지막으로 출력한 분류값
@@ -278,7 +297,7 @@ def main():
                     if not up:
                         since.pop(tid, None)
                         continue
-                    if args.require_wave and not waving:
+                    if need_wave and not waving:
                         continue
                     since.setdefault(tid, now)
                     if now - since[tid] < args.hold:
@@ -303,18 +322,19 @@ def main():
                     last_label.pop(tid, None)
                     watcher.forget(tid)
 
-            if target:
+            if target and not busy.is_set():
                 _, tid, j1, side = target
                 last_greet[tid] = now
                 since.pop(tid, None)
-                print('[%s] id=%d %s손 들었음 -> J1=%+.0f 도로 인사'
+                print('[%s] id=%d %s손 %s -> J1=%+.0f 도로 인사'
                       % (time.strftime('%H:%M:%S'), tid,
-                         '왼' if side == 'l' else '오른', j1))
+                         '왼' if side == 'l' else '오른',
+                         '흔듦' if need_wave else '들었음', j1))
                 if greeter:
-                    greeter.greet(j1_deg=j1, name=args.name)
-                    # 인사 동안 쌓인 프레임을 버려 지연을 없앤다
-                    for _ in range(5):
-                        cap.read()
+                    busy.set()
+                    worker[0] = threading.Thread(target=do_greet, args=(j1, tid),
+                                                 daemon=True)
+                    worker[0].start()
 
             fps_n += 1
             if now - fps_t >= 1.0:
@@ -328,9 +348,13 @@ def main():
                                                     '양손 들기') else (0, 255, 0)
                     vis = draw_label(vis, 'id%d %s' % (tid, ko),
                                      (x1, max(0, y1 - 28)), color)
-                vis = draw_label(vis, '%.1f fps   %s' %
-                                 (fps, '로봇 ON' if greeter else '감지 전용'),
-                                 (10, 8), (0, 255, 0))
+                state = '감지 전용'
+                if greeter:
+                    state = '인사 중' if busy.is_set() else '대기 중'
+                vis = draw_label(vis, '%.1f fps   %s   트리거=%s' %
+                                 (fps, state, '흔들기' if need_wave else '손들기'),
+                                 (10, 8),
+                                 (0, 128, 255) if busy.is_set() else (0, 255, 0))
                 cv2.imshow('detect_greet  (q=종료)', vis)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
@@ -340,6 +364,9 @@ def main():
             greeter.arm.emergency_stop()
             print('비상 정지. 다시 움직이려면 greet.py rest 로 대기 자세부터.')
     finally:
+        if worker[0] is not None and worker[0].is_alive():
+            print('인사 동작이 끝나기를 기다리는 중...')
+            worker[0].join(timeout=15)
         cap.release()
         if args.show:
             cv2.destroyAllWindows()

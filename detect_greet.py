@@ -6,9 +6,11 @@
 학습 모델보다 이 방식이 덜 깨지고 조명/복장 변화에도 강하다.
 
 먼저 로봇 없이 감지만 확인한다 (팔이 움직이지 않는다):
+  .venv/bin/python detect_greet.py --list-cameras   # 어느 인덱스가 IMX477 인지 확인
   .venv/bin/python detect_greet.py --show
 
 확인이 끝나면 로봇을 붙인다:
+  .venv/bin/python detect_greet.py --list-cameras   # 어느 인덱스가 IMX477 인지 확인
   .venv/bin/python detect_greet.py --show --robot --speed 20
 
 종료는 q 또는 Ctrl+C.
@@ -121,8 +123,14 @@ def draw_label(frame, text, xy, color=(0, 255, 0), size=22):
 
 def main():
     ap = argparse.ArgumentParser(description='사람이 손을 들면 인사')
-    ap.add_argument('--camera', type=int, default=1, help='카메라 인덱스 (Arducam)')
+    ap.add_argument('--camera', type=int, default=0,
+                    help='카메라 인덱스. Arducam IMX477 은 보통 0, 맥북 내장은 1')
+    ap.add_argument('--list-cameras', action='store_true',
+                    help='연결된 카메라의 인덱스와 해상도를 출력하고 종료')
     ap.add_argument('--model', default='yolo11n-pose.pt')
+    ap.add_argument('--device', default='auto',
+                    help="추론 장치. auto 면 애플 실리콘 GPU(mps)를 쓴다")
+    ap.add_argument('--imgsz', type=int, default=640, help='추론 입력 크기')
     ap.add_argument('--conf', type=float, default=0.4, help='사람 검출 신뢰도')
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
@@ -148,6 +156,24 @@ def main():
     import cv2
     from ultralytics import YOLO
 
+    if args.list_cameras:
+        print('index  기본 해상도    최대 해상도     추정')
+        for i in range(5):
+            c = cv2.VideoCapture(i)
+            if not c.isOpened():
+                c.release()
+                continue
+            ok, f = c.read()
+            c.set(cv2.CAP_PROP_FRAME_WIDTH, 4056)
+            c.set(cv2.CAP_PROP_FRAME_HEIGHT, 3040)
+            mw, mh = c.get(cv2.CAP_PROP_FRAME_WIDTH), c.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            guess = 'Arducam IMX477' if mw * mh > 6e6 else '내장 카메라로 보임'
+            print('%5d  %4dx%-4d     %4dx%-4d     %s'
+                  % (i, f.shape[1] if ok else 0, f.shape[0] if ok else 0,
+                     mw, mh, guess))
+            c.release()
+        return
+
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         sys.exit('카메라 %d 를 열 수 없음. 인덱스를 바꿔보거나 '
@@ -156,6 +182,11 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 
+    device = args.device
+    if device == 'auto':
+        import torch
+        device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+    print('추론 장치: %s' % device)
     model = YOLO(args.model)
 
     greeter = None
@@ -182,7 +213,8 @@ def main():
             h, w = frame.shape[:2]
 
             res = model.track(frame, persist=True, verbose=False,
-                              conf=args.conf, classes=[0])[0]
+                              conf=args.conf, classes=[0],
+                              device=device, imgsz=args.imgsz)[0]
 
             target = None       # (면적, track id, j1 각도, 어느 손)
             seen = set()

@@ -75,6 +75,28 @@ g.greet(j1_deg=15)     # 사람 방향으로 인사한 뒤 대기 자세 복귀
 g.close()
 ```
 
+### 내가 저장한 동작으로 인사하기
+
+`greet.py wave` 는 `poses/` 를 읽지 않는다. 코드 상단의 `REST`/`RAISE` 상수로 계산한
+내장 동작이다. 직접 티칭한 동작을 쓰려면 `play` 를 쓴다.
+
+```sh
+.venv/bin/python greet.py --list                        # 저장된 동작 목록
+.venv/bin/python greet.py play --name hello --dry-run   # 검증만
+.venv/bin/python greet.py play --name hello --cycles 3
+```
+
+감지 코드에서도 마찬가지로 고를 수 있다.
+
+```python
+g.greet(j1_deg=15)      # 내장 인사
+g.greet(name='hello')   # 티칭해 둔 동작
+```
+
+`repeat_from` 이 있는 파일은 그 지점부터 끝까지만 `cycles` 번 반복한다 (흔드는 구간).
+`jog.py` 로 저장한 파일에는 `repeat_from` 이 없어 전체를 반복한다. 흔드는 구간만 반복시키려면
+`xarm_pose.py record` 에서 `r` 로 지정하거나 JSON 의 `repeat_from` 을 직접 넣으면 된다.
+
 자세를 새로 찾을 때:
 
 ```sh

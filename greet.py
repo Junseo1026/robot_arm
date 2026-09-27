@@ -14,14 +14,20 @@
   .venv/bin/python greet.py random
   .venv/bin/python greet.py rest            # 대기 자세로
 
+저장해 둔 동작을 재생 (jog.py 의 `w <이름>` 으로 만든 파일):
+  .venv/bin/python greet.py --list                        # 저장된 동작 목록
+  .venv/bin/python greet.py play --name hello --dry-run
+  .venv/bin/python greet.py play --name hello --cycles 3
+
 감지 코드에서 쓸 때:
   from greet import Greeter
   g = Greeter()                 # 연결 + 대기 자세
-  g.greet(j1_deg=15)            # 사람이 보이면 그 방향으로 인사
+  g.greet(j1_deg=15)            # 코드에 내장된 인사
+  g.greet(name='hello')         # 내가 저장해 둔 동작으로 인사
   g.rest()
   g.close()
 """
-import argparse, math, os, random, time
+import argparse, json, math, os, random, time
 from xarm.wrapper import XArmAPI
 
 IP = os.environ.get('XARM_IP', '192.168.1.221')
@@ -34,8 +40,27 @@ J1_LIMIT = 60.0                   # 사람 쪽으로 돌릴 수 있는 최대 �
 BLEND = 20.0                      # 흔들기 코너 블렌딩 반경(mm). 클수록 부드럽고 진폭이 줄어든다
 
 
+POSE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'poses')
+
+
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
+
+def load_waypoints(name):
+    """poses/<name>.json 에서 관절각 목록과 반복 시작점을 읽는다.
+
+    jog.py 의 `w <이름>` 과 xarm_pose.py 가 저장하는 형식을 모두 읽는다.
+    """
+    path = name if os.path.isabs(name) else os.path.join(POSE_DIR, name + '.json')
+    if not os.path.exists(path):
+        have = sorted(f[:-5] for f in os.listdir(POSE_DIR) if f.endswith('.json'))
+        raise FileNotFoundError('%s 없음. 저장된 동작: %s' % (path, ', '.join(have) or '(없음)'))
+    data = json.load(open(path))
+    angles = [wp['angles'] for wp in data['waypoints']]
+    if not angles:
+        raise ValueError('%s 에 웨이포인트가 없음' % path)
+    return angles, data.get('repeat_from')
 
 
 class Greeter:
@@ -148,6 +173,34 @@ class Greeter:
             time.sleep(0.2)
             self._move(base, wait=True)
 
+    def play(self, name, cycles=1, speed=None, back_to_rest=False):
+        """poses/<name>.json 에 저장해 둔 자세를 순서대로 재생한다.
+
+        파일에 repeat_from 이 있으면 그 지점부터 끝까지만 cycles 번 반복한다.
+        (jog.py 로 저장한 파일에는 repeat_from 이 없어 전체를 cycles 번 반복한다.)
+        """
+        angles, repeat_from = load_waypoints(name)
+        head = angles if repeat_from is None else angles[:repeat_from]
+        tail = [] if repeat_from is None else angles[repeat_from:]
+        print('%s: %d개 웨이포인트%s' %
+              (name, len(angles),
+               ', %d번째부터 %d회 반복' % (repeat_from + 1, cycles) if tail else
+               (', 전체 %d회 반복' % cycles if cycles > 1 else '')))
+        for a in head:
+            self._move(a, speed=speed)
+        loops = tail if tail else (angles if cycles > 1 else [])
+        if tail:
+            for _ in range(cycles):
+                for a in tail:
+                    self._move(a, speed=speed)
+        else:
+            for _ in range(cycles - 1):
+                for a in angles:
+                    self._move(a, speed=speed)
+        if back_to_rest:
+            self.rest()
+        return 0
+
     def bow(self, j1_deg=0.0, depth=20.0):
         """고개 숙이는 느낌의 인사. 손을 든 뒤 팔 전체를 앞으로 굽힌다."""
         base = self.raise_hand(j1_deg)
@@ -167,8 +220,17 @@ class Greeter:
         """작게 빠르게 흔든다."""
         return self.wave(j1_deg, cycles=cycles, amp=15.0)
 
-    def greet(self, j1_deg=0.0, kind=None, back_to_rest=True):
-        """감지 코드에서 호출하는 진입점. kind 생략 시 랜덤."""
+    def greet(self, j1_deg=0.0, kind=None, back_to_rest=True, name=None):
+        """감지 코드에서 호출하는 진입점.
+
+        name 을 주면 poses/<name>.json 에 저장해 둔 동작을 재생한다.
+        생략하면 코드에 내장된 인사를 쓰고, kind 도 생략하면 그중 랜덤.
+        """
+        if name:
+            code = self.play(name)
+            if back_to_rest:
+                self.rest()
+            return code, name
         kinds = {'wave': self.wave, 'big': self.big_wave,
                  'small': self.small_wave, 'bow': self.bow}
         if kind is None:
@@ -191,7 +253,9 @@ class Greeter:
 def main():
     ap = argparse.ArgumentParser(description='xArm6 인사 동작')
     ap.add_argument('kind', nargs='?', default='wave',
-                    choices=['wave', 'big', 'small', 'bow', 'random', 'rest', 'raise'])
+                    choices=['wave', 'big', 'small', 'bow', 'random', 'rest', 'raise', 'play'])
+    ap.add_argument('--name', help="play 할 때 poses/<이름>.json 지정")
+    ap.add_argument('--list', action='store_true', help='저장된 동작 목록만 보고 종료')
     ap.add_argument('--j1', type=float, default=0.0, help='사람 방향 각도 (deg)')
     ap.add_argument('--cycles', type=int, default=3)
     ap.add_argument('--amp', type=float, default=30.0)
@@ -205,11 +269,24 @@ def main():
                     help='이동마다 Enter 확인을 받는다. 처음 실행할 때 권장')
     args = ap.parse_args()
 
+    if args.list:
+        names = sorted(f[:-5] for f in os.listdir(POSE_DIR) if f.endswith('.json'))
+        for n in names:
+            a, rf = load_waypoints(n)
+            print('%-16s %2d개  repeat_from=%s' % (n, len(a), rf))
+        if not names:
+            print('poses/ 가 비어 있음. jog.py 에서 s 로 저장하고 w <이름> 으로 파일로 만들어줘.')
+        return
+
     g = Greeter(speed=args.speed, go_rest=(args.kind != 'rest'),
                 dry_run=args.dry_run, step=args.step)
     try:
       try:
-        if args.kind == 'rest':
+        if args.kind == 'play':
+            if not args.name:
+                ap.error('play 는 --name 이 필요해. 예: greet.py play --name hello')
+            print('재생 code=%s' % g.play(args.name, cycles=args.cycles))
+        elif args.kind == 'rest':
             print('대기 자세 code=%s' % g.rest())
         elif args.kind == 'raise':
             print('손 들기 -> %s' % g.raise_hand(args.j1))

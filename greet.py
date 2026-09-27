@@ -263,6 +263,8 @@ def main():
                     help='관절 속도 deg/s (기본 20, 안전하게 낮춰둠)')
     ap.add_argument('--smooth', action='store_true', help='사인파 스트리밍으로 흔들기')
     ap.add_argument('--stay', action='store_true', help='끝나고 대기 자세로 안 돌아감')
+    ap.add_argument('--no-start-rest', action='store_true',
+                    help='시작할 때 대기 자세로 모으지 않고 현재 자세에서 바로 시작')
     ap.add_argument('--dry-run', action='store_true',
                     help='로봇을 움직이지 않고 지나갈 자세만 검증해서 출력')
     ap.add_argument('--step', action='store_true',
@@ -278,7 +280,8 @@ def main():
             print('poses/ 가 비어 있음. jog.py 에서 s 로 저장하고 w <이름> 으로 파일로 만들어줘.')
         return
 
-    g = Greeter(speed=args.speed, go_rest=(args.kind != 'rest'),
+    g = Greeter(speed=args.speed,
+                go_rest=(args.kind != 'rest' and not args.no_start_rest),
                 dry_run=args.dry_run, step=args.step)
     try:
       try:

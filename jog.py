@@ -8,12 +8,16 @@
   +6 15             6번 관절만 +15도 (상대 이동).  -2 10 은 2번 관절 -10도
   Enter             현재 자세 다시 출력
   s                 현재 자세를 웨이포인트로 저장
+  r                 여기서부터 반복 구간 시작 (손 흔드는 구간 지정)
   p                 저장한 웨이포인트를 순서대로 재생
   d                 마지막 웨이포인트 삭제
-  w 이름            poses/이름.json 으로 저장
+  w 이름            poses/이름.json 으로 저장  <- 이걸 해야 파일로 남는다
   h                 홈으로
   speed 40          이동 속도(deg/s) 변경
+  reset             비상정지 후 다시 움직일 수 있게 복구
   q                 종료
+
+Ctrl+C 는 비상 정지다. 누르면 팔이 즉시 멈추고, reset 을 쳐야 다시 움직인다.
 """
 import json, os, sys, time
 from xarm.wrapper import XArmAPI
@@ -49,6 +53,7 @@ def main():
     arm = connect()
     speed = 30.0
     wps = []
+    repeat_from = None
     print(__doc__)
     print('현재 자세:')
     show(arm)
@@ -56,9 +61,15 @@ def main():
     while True:
         try:
             line = input('jog[%d저장,%.0fdeg/s]> ' % (len(wps), speed)).strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             print()
             break
+        except KeyboardInterrupt:
+            # Ctrl+C 만으로는 컨트롤러 큐의 동작이 계속 실행된다.
+            print('\n  비상 정지')
+            arm.emergency_stop()
+            print('  정지했다. 다시 움직이려면 reset 을 쳐줘. 종료는 q.')
+            continue
 
         low = line.lower()
         if low == 'q':
@@ -71,6 +82,20 @@ def main():
             print('  code=%s' % arm.move_gohome(speed=speed, wait=True))
             show(arm)
             continue
+        if low == 'reset':
+            arm.clean_warn()
+            arm.clean_error()
+            arm.motion_enable(True)
+            arm.set_mode(0)
+            arm.set_state(0)
+            time.sleep(0.3)
+            print('  복구 완료')
+            show(arm)
+            continue
+        if low == 'r':
+            repeat_from = len(wps)
+            print('  반복 시작점 = %d번째 웨이포인트부터' % (repeat_from + 1))
+            continue
         if low == 's':
             ang = show(arm)
             if ang:
@@ -80,6 +105,9 @@ def main():
         if low == 'd':
             if wps:
                 wps.pop()
+                if repeat_from is not None and repeat_from > len(wps):
+                    repeat_from = None
+                    print('  반복 시작점도 해제됨')
                 print('  마지막 삭제 (남은 %d개)' % len(wps))
             continue
         if low == 'p':
@@ -108,12 +136,13 @@ def main():
                 print('  저장된 웨이포인트 없음')
                 continue
             path = os.path.join(DIR, parts[1] + '.json')
-            json.dump({'waypoints': [{'angles': a} for a in wps], 'repeat_from': None},
-                      open(path, 'w'), indent=1)
-            print('  파일 저장: %s (%d개)' % (path, len(wps)))
+            json.dump({'waypoints': [{'angles': a} for a in wps],
+                       'repeat_from': repeat_from}, open(path, 'w'), indent=1)
+            print('  파일 저장: %s (%d개, repeat_from=%s)' % (path, len(wps), repeat_from))
+            print('  재생: .venv/bin/python greet.py play --name %s' % parts[1])
             continue
 
-        # 상대 이동:  +6 15  /  -2 10
+        # 상대 이동:  +6 15  /  -2 10  (이동 중 Ctrl+C 는 위에서 비상정지로 처리된다)
         if line[0] in '+-' and len(line.split()) == 2 and line[1].isdigit():
             j = int(line[1])
             try:

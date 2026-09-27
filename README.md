@@ -2,6 +2,17 @@
 
 xArm6 로봇팔 제어 코드. 전시용으로, 카메라에 사람이 잡히면 로봇팔이 인사한다.
 
+## 전체 순서 요약
+
+| 하려는 것 | 실행 | 키 |
+|---|---|---|
+| 포인트 찍기 | `.venv/bin/python jog.py` | 관절값 6개 입력 → `s` 저장 → `w 이름` 파일로 |
+| 저장한 대로 실행 | `.venv/bin/python greet.py play --name 이름` | — |
+| 내장 인사 실행 | `.venv/bin/python greet.py wave` | — |
+| 긴급 중단 | 실행 중 `Ctrl+C` | 이후 `reset`(jog) 또는 `greet.py rest` |
+
+`s` 는 메모리에만 담는다. **`w 이름` 을 해야 파일로 남는다.**
+
 ## 구성
 
 | 파일 | 역할 |

@@ -1,0 +1,99 @@
+# robot_arm
+
+xArm6 로봇팔 제어 코드. 전시용으로, 카메라에 사람이 잡히면 로봇팔이 인사한다.
+
+## 구성
+
+| 파일 | 역할 |
+|---|---|
+| `greet.py` | 인사 동작. `Greeter` 클래스 + 단독 실행 CLI |
+| `jog.py` | 관절값을 직접 입력해 움직이는 티칭 REPL |
+| `xarm_pose.py` | 자세 기록/재생 (수동 프리드라이브 티칭 포함) |
+| `poses/*.json` | 저장된 웨이포인트 |
+
+## 하드웨어 / 네트워크
+
+- 로봇: xArm6, 컨트롤러 v2.7.0, `192.168.1.221`
+- UFactory Studio: <http://192.168.1.221:18333>
+- 카메라: Arducam 12MP (UVC), 모니터 옆 고정. 카메라는 움직이지 않는다.
+
+Mac은 Wi-Fi로 인터넷을 쓰면서 USB 이더넷으로 로봇에 붙는다. **게이트웨이를 비워두는 것이
+핵심** — USB LAN이 서비스 순서상 Wi-Fi보다 위라서 게이트웨이를 넣으면 기본 경로를 가로채
+인터넷이 끊긴다.
+
+```sh
+sudo networksetup -setmanual "USB 10/100 LAN" 192.168.1.100 255.255.255.0 ""
+```
+
+## 설치
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+의존성은 반드시 이 venv에 둔다. base conda 환경에 mediapipe/opencv를 넣으면 numpy가 2.x로
+올라가 scipy·numba·gensim이 깨진다.
+
+## 사용
+
+동작 확인:
+
+```sh
+.venv/bin/python greet.py wave             # 손 흔들기
+.venv/bin/python greet.py wave --j1 25     # 왼쪽 사람을 보고 인사
+.venv/bin/python greet.py wave --smooth    # 사인파 스트리밍(부드러움)
+.venv/bin/python greet.py random           # wave/big/small/bow 중 랜덤
+.venv/bin/python greet.py rest             # 대기 자세로
+```
+
+감지 코드에서 호출:
+
+```python
+from greet import Greeter
+
+g = Greeter()          # 연결 + 대기 자세
+g.greet(j1_deg=15)     # 사람 방향으로 인사한 뒤 대기 자세 복귀
+g.close()
+```
+
+자세를 새로 찾을 때:
+
+```sh
+.venv/bin/python jog.py
+#  0 -60 -30 0 0 0   관절값 6개 절대 이동
+#  +6 15             6번 관절만 +15도
+#  s / p / d         현재 자세 저장 / 재생 / 마지막 삭제
+#  w hello           poses/hello.json 으로 저장
+#  speed 40, h(홈), q(종료)
+```
+
+## 동작 설계
+
+`REST`(팔 내림) → `RAISE`(손 들기) → J6 좌우 흔들기 → `REST`.
+두 상수는 `greet.py` 상단에 있고, 이것만 바꾸면 전체 동작이 따라 바뀐다.
+
+- `RAISE = [0, -60, -30, 0, 0, 0]` — 툴 Z축이 정면 수평(+X), 높이 608mm.
+  이 자세에서는 **J6을 돌려도 xyz가 전혀 변하지 않는다.** 회전축이 정면 방향과 일치하므로
+  J6 회전이 곧 사람이 손을 흔드는 동작이 된다. 손가락이 고정된 3D 프린팅 손에 적합하다.
+- `REST = [0, -10, -35, 0, 45, 0]` — xyz (375, 0, 273).
+- `J1_LIMIT = 60` — 사람 쪽으로 돌리는 최대 각도. 모니터가 팔 근처면 줄인다.
+
+동작 범위는 반경 약 400mm, 높이 610mm. J1이 ±60° 도니 옆 공간도 필요하다.
+
+### 웨이포인트는 자동으로 보간되지 않는다
+
+`set_servo_angle(wait=True)`는 점마다 완전히 멈춘다. 부드럽게 하려면 (1) `wait=False`로
+명령을 큐에 쌓아 블렌딩시키거나, (2) `set_position`의 `radius`로 코너를 깎거나, (3) mode 1에서
+100Hz로 보간점을 스트리밍해야 한다. 손 흔들기는 양 끝에서 방향을 바꾸므로 큐 방식으로도
+자연스럽고, `_wave_smooth()`가 (3)번 방식을 구현해 뒀다.
+
+## 다음 단계
+
+사람 감지(`detect_greet.py`)를 붙인다. 워크바이 전시라서 인사 하나만으로는 관객이 없는 대부분의
+시간에 로봇이 죽은 것처럼 보인다. 그래서:
+
+- 대기 중 아주 느린 스캔 동작으로 "살아있음"을 보여준다
+- 얼굴이 잡히면 그 방향으로 J1을 돌려 쳐다본 뒤 인사한다 (뒤통수에는 반응하지 않는 게이팅)
+- 같은 사람에게 반복 인사하지 않도록 트래킹 + 쿨다운
+- 인사 종류를 랜덤화해 반복 관람자도 다른 걸 보게 한다

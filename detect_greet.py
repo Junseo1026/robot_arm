@@ -131,6 +131,10 @@ def main():
     ap.add_argument('--device', default='auto',
                     help="추론 장치. auto 면 애플 실리콘 GPU(mps)를 쓴다")
     ap.add_argument('--imgsz', type=int, default=640, help='추론 입력 크기')
+    ap.add_argument('--tracker', default='bytetrack.yaml',
+                    help='트래커. 기본 ByteTrack. 카메라가 고정이라 BoT-SORT 의 '
+                         'GMC(카메라 움직임 보정)가 필요 없고, OpenCV 5 에서 GMC 가 '
+                         '깨져 경고를 쏟아낸다')
     ap.add_argument('--conf', type=float, default=0.4, help='사람 검출 신뢰도')
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
@@ -227,7 +231,8 @@ def main():
 
             res = model.track(frame, persist=True, verbose=False,
                               conf=args.conf, classes=[0],
-                              device=device, imgsz=args.imgsz)[0]
+                              device=device, imgsz=args.imgsz,
+                              tracker=args.tracker)[0]
 
             target = None       # (면적, track id, j1 각도, 어느 손)
             seen = set()

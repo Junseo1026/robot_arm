@@ -170,6 +170,10 @@ g.greet(name='hello')   # 티칭해 둔 동작
 - `--camera N` 카메라 인덱스. **Arducam IMX477 은 0, 맥북 내장은 1.**
   `--list-cameras` 로 확인한다 (최대 해상도 4032x3040 이 IMX477)
 - `--device auto` 애플 실리콘 GPU(mps) 사용. 1280x720 입력에서 CPU 31fps -> MPS 57fps
+- `--tracker bytetrack.yaml` 기본값. ultralytics 기본 트래커인 BoT-SORT 는
+  GMC(카메라 움직임 보정)에 OpenCV 의 sparse optical flow 를 쓰는데 OpenCV 5.0 에서
+  assertion 으로 깨져 `GMC failed` 경고를 매 프레임 쏟아낸다. 카메라가 고정이라
+  GMC 자체가 필요 없으므로 GMC 가 없는 ByteTrack 을 쓴다
 - `--hold 0.4` 이 시간 이상 조건이 유지되어야 인사 (오검출 방지)
 - `--cooldown 8` 같은 사람에게 다시 인사하기까지 최소 간격. 트래킹 ID 기준
 - `--j1-span 45` 화면 좌우 끝에 대응하는 J1 각도. `--flip-j1` 로 좌우 반전

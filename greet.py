@@ -199,26 +199,41 @@ class Greeter:
             time.sleep(0.2)
             self._move(base, wait=True)
 
-    def play(self, name, cycles=1, speed=None, back_to_rest=False):
+    def play(self, name, cycles=1, speed=None, back_to_rest=False, repeat=None,
+             repeat_speed=None):
         """poses/<name>.json 에 저장해 둔 자세를 순서대로 재생한다.
 
         파일에 repeat_from 이 있으면 그 지점부터 끝까지만 cycles 번 반복한다.
         (jog.py 로 저장한 파일에는 repeat_from 이 없어 전체를 cycles 번 반복한다.)
+        repeat=(시작, 끝) 을 주면 파일 값 대신 angles[시작:끝] 만 cycles 번 반복하고
+        나머지 자세로 이어간다. 번호는 0 부터, 끝은 포함하지 않는다.
+        repeat_speed 를 주면 반복 구간 자세로 가는 이동만 그 속도로 한다 (흔들기).
         """
         angles, repeat_from = load_waypoints(name)
-        head = angles if repeat_from is None else angles[:repeat_from]
-        tail = [] if repeat_from is None else angles[repeat_from:]
+        repeat_to = len(angles)
+        if repeat is not None:
+            repeat_from, repeat_to = repeat
+        if repeat_from is not None and not 0 <= repeat_from < repeat_to <= len(angles):
+            raise ValueError('반복 구간 %s~%s 가 웨이포인트 %d개 범위를 벗어남'
+                             % (repeat_from, repeat_to, len(angles)))
+        if repeat_from is None:
+            head, loop, after = angles, [], []
+        else:
+            head = angles[:repeat_from]
+            loop = angles[repeat_from:repeat_to]
+            after = angles[repeat_to:]
         print('%s: %d개 웨이포인트%s' %
               (name, len(angles),
-               ', %d번째부터 %d회 반복' % (repeat_from + 1, cycles) if tail else
+               ', %d~%d번 %d회 반복' % (repeat_from, repeat_to - 1, cycles) if loop else
                (', 전체 %d회 반복' % cycles if cycles > 1 else '')))
         for a in head:
             self._move(a, speed=speed)
-        loops = tail if tail else (angles if cycles > 1 else [])
-        if tail:
+        if loop:
             for _ in range(cycles):
-                for a in tail:
-                    self._move(a, speed=speed)
+                for a in loop:
+                    self._move(a, speed=repeat_speed or speed)
+            for a in after:
+                self._move(a, speed=speed)
         else:
             for _ in range(cycles - 1):
                 for a in angles:
@@ -246,14 +261,17 @@ class Greeter:
         """작게 빠르게 흔든다."""
         return self.wave(j1_deg, cycles=cycles, amp=15.0)
 
-    def greet(self, j1_deg=0.0, kind=None, back_to_rest=True, name=None):
+    def greet(self, j1_deg=0.0, kind=None, back_to_rest=True, name=None, cycles=1,
+              repeat=None, repeat_speed=None):
         """감지 코드에서 호출하는 진입점.
 
-        name 을 주면 poses/<name>.json 에 저장해 둔 동작을 재생한다.
+        name 을 주면 poses/<name>.json 에 저장해 둔 동작을 재생한다 (cycles/repeat 는
+        play() 와 같고, j1_deg 는 쓰지 않는다).
         생략하면 코드에 내장된 인사를 쓰고, kind 도 생략하면 그중 랜덤.
         """
         if name:
-            code = self.play(name)
+            code = self.play(name, cycles=cycles, repeat=repeat,
+                             repeat_speed=repeat_speed)
             if back_to_rest:
                 self.rest()
             return code, name
@@ -284,6 +302,10 @@ def main():
     ap.add_argument('--list', action='store_true', help='저장된 동작 목록만 보고 종료')
     ap.add_argument('--j1', type=float, default=0.0, help='사람 방향 각도 (deg)')
     ap.add_argument('--cycles', type=int, default=3)
+    ap.add_argument('--repeat', type=int, nargs=2, metavar=('시작', '끝'),
+                    help='play 할 때 반복 구간. 0 부터 세고 끝은 제외. 예: --repeat 4 6')
+    ap.add_argument('--repeat-speed', type=float,
+                    help='play 할 때 반복 구간(흔들기)만 이 속도 deg/s. 없으면 --speed')
     ap.add_argument('--amp', type=float, default=30.0)
     ap.add_argument('--speed', type=float, default=20.0,
                     help='관절 속도 deg/s (기본 20, 안전하게 낮춰둠)')
@@ -320,7 +342,9 @@ def main():
         if args.kind == 'play':
             if not args.name:
                 ap.error('play 는 --name 이 필요해. 예: greet.py play --name hello')
-            print('재생 code=%s' % g.play(args.name, cycles=args.cycles))
+            print('재생 code=%s' % g.play(args.name, cycles=args.cycles,
+                                         repeat=args.repeat,
+                                         repeat_speed=args.repeat_speed))
         elif args.kind == 'rest':
             print('대기 자세 code=%s' % g.rest())
         elif args.kind == 'raise':

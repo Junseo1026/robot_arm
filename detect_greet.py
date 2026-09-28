@@ -176,6 +176,16 @@ def main():
                     help='실제로 팔을 움직인다. 없으면 감지만 하고 출력만 한다')
     ap.add_argument('--speed', type=float, help='관절 속도 deg/s (기본 20)')
     ap.add_argument('--name', help='<이름>.json 으로 인사 (생략하면 내장 인사)')
+    ap.add_argument('--cycles', type=int,
+                    help='--name 동작의 repeat_from 구간 반복 횟수 (기본 1)')
+    ap.add_argument('--repeat', type=int, nargs=2, metavar=('시작', '끝'),
+                    help='--name 동작에서 반복할 구간. 0 부터 세고 끝은 제외. '
+                         '예: --repeat 4 6 이면 4,5번 자세를 반복')
+    ap.add_argument('--repeat-speed', type=float,
+                    help='--repeat 구간(흔들기)만 이 속도 deg/s. 없으면 --speed')
+    ap.add_argument('--no-rest', action='store_true', default=None,
+                    help='시작/인사 후 내장 대기 자세(REST)로 가지 않는다. '
+                         '저장한 좌표로만 움직이게 할 때 쓴다')
     ap.add_argument('--scenario', help='scenarios/<이름>/scenario.json 을 읽어 '
                                        '트리거와 동작, 파라미터를 적용한다')
     ap.add_argument('--list-scenarios', action='store_true',
@@ -231,6 +241,14 @@ def main():
         motion = cfg.get('motion', {})
         if args.name is None and motion.get('type') == 'file':
             args.name = motion.get('name')
+        if args.cycles is None:
+            args.cycles = motion.get('cycles')
+        if args.repeat is None:
+            args.repeat = motion.get('repeat')
+        if args.repeat_speed is None:
+            args.repeat_speed = motion.get('repeat_speed')
+        if args.no_rest is None and motion.get('rest') is False:
+            args.no_rest = True
         if args.trigger is None:
             args.trigger = cfg.get('trigger')
 
@@ -240,6 +258,9 @@ def main():
             setattr(args, key, params.get(key, default))
     if args.trigger is None:
         args.trigger = 'wave'
+    if args.cycles is None:
+        args.cycles = 1
+    args.no_rest = bool(args.no_rest)
 
     import cv2
     from ultralytics import YOLO
@@ -293,8 +314,10 @@ def main():
     greeter = None
     if args.robot:
         from greet import Greeter
-        greeter = Greeter(speed=args.speed, dry_run=args.dry_run)
-        print('로봇 연결됨%s' % (' (dry-run: 움직이지 않음)' if args.dry_run else '. 대기 자세.'))
+        greeter = Greeter(speed=args.speed, dry_run=args.dry_run,
+                          go_rest=not args.no_rest)
+        print('로봇 연결됨%s' % (' (dry-run: 움직이지 않음)' if args.dry_run else
+                               '. 현재 자세 유지.' if args.no_rest else '. 대기 자세.'))
     else:
         print('감지 전용 모드. 팔은 움직이지 않는다. 실제로 움직이려면 --robot 을 붙여줘.')
 
@@ -307,7 +330,9 @@ def main():
 
     def do_greet(j1, tid):
         try:
-            greeter.greet(j1_deg=j1, name=args.name)
+            greeter.greet(j1_deg=j1, name=args.name, cycles=args.cycles,
+                          repeat=args.repeat, repeat_speed=args.repeat_speed,
+                          back_to_rest=not args.no_rest)
         except Exception as e:
             print('인사 중 오류: %s' % e)
         finally:

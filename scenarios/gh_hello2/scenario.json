@@ -1,0 +1,13 @@
+{
+  "name": "gh_hello2",
+  "title": "손 들면 티칭 동작으로 인사 (v2)",
+  "description": "관객이 손을 어깨 위로 들면 poses/gh_hello2.json 의 좌표로만 인사한다. 1~3번 → (4,5번: 좌·우 흔들기)×2 → 6·7번에서 멈춘다 (번호는 저장 순서, 1부터). 내장 대기 자세(REST)로는 가지 않는다.",
+  "trigger": "handup",
+  "motion": {"type": "file", "name": "gh_hello2", "repeat": [3, 5], "cycles": 2, "repeat_speed": 60, "rest": false},
+  "params": {
+    "speed": 40,
+    "hold": 0.4,
+    "cooldown": 8.0,
+    "conf": 0.4
+  }
+}

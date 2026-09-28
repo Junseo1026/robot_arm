@@ -1,0 +1,13 @@
+{
+  "name": "gh_hello",
+  "title": "손 들면 티칭 동작으로 인사",
+  "description": "관객이 손을 어깨 위로 들면 jog.py 로 찍은 좌표로만 인사한다. 내장 대기 자세(REST)로는 가지 않는다.",
+  "trigger": "handup",
+  "motion": {"type": "file", "name": "gh_hello", "cycles": 3, "rest": false},
+  "params": {
+    "speed": 20,
+    "hold": 0.4,
+    "cooldown": 8.0,
+    "conf": 0.4
+  }
+}

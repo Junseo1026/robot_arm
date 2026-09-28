@@ -215,7 +215,10 @@ def main():
     ap.add_argument('--no-highfive', action='store_true',
                     help='시나리오에 highfive 가 있어도 머리 위 손에 반응하지 않는다')
     ap.add_argument('--repeat-speed', type=float,
-                    help='--repeat 구간(흔들기)만 이 속도 deg/s. 없으면 --speed')
+                    help='--repeat 구간(흔들기)만 이 속도 deg/s. 없으면 --motion-speed')
+    ap.add_argument('--motion-speed', type=float,
+                    help='--name 인사 동작만 이 속도 deg/s. 하이파이브는 --speed 를 쓴다. '
+                         '없으면 --speed')
     ap.add_argument('--no-rest', action='store_true', default=None,
                     help='시작/인사 후 내장 대기 자세(REST)로 가지 않는다. '
                          '저장한 좌표로만 움직이게 할 때 쓴다')
@@ -280,6 +283,8 @@ def main():
             args.repeat = motion.get('repeat')
         if args.repeat_speed is None:
             args.repeat_speed = motion.get('repeat_speed')
+        if args.motion_speed is None:
+            args.motion_speed = motion.get('speed')
         if args.no_rest is None and motion.get('rest') is False:
             args.no_rest = True
         if args.trigger is None:
@@ -380,6 +385,7 @@ def main():
             else:
                 greeter.greet(j1_deg=j1, name=args.name, cycles=args.cycles,
                               repeat=args.repeat, repeat_speed=args.repeat_speed,
+                              speed=args.motion_speed,
                               back_to_rest=not args.no_rest)
         except Exception as e:
             print('%s 중 오류: %s' % ('하이파이브' if kind == 'highfive' else '인사', e))

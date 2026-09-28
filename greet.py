@@ -373,15 +373,15 @@ class Greeter:
         return self.wave(j1_deg, cycles=cycles, amp=15.0)
 
     def greet(self, j1_deg=0.0, kind=None, back_to_rest=True, name=None, cycles=1,
-              repeat=None, repeat_speed=None):
+              repeat=None, repeat_speed=None, speed=None):
         """감지 코드에서 호출하는 진입점.
 
-        name 을 주면 poses/<name>.json 에 저장해 둔 동작을 재생한다 (cycles/repeat 는
-        play() 와 같고, j1_deg 는 쓰지 않는다).
+        name 을 주면 poses/<name>.json 에 저장해 둔 동작을 재생한다 (cycles/repeat/speed 는
+        play() 와 같고, j1_deg 는 쓰지 않는다). speed 를 생략하면 Greeter 기본 속도.
         생략하면 코드에 내장된 인사를 쓰고, kind 도 생략하면 그중 랜덤.
         """
         if name:
-            code = self.play(name, cycles=cycles, repeat=repeat,
+            code = self.play(name, cycles=cycles, speed=speed, repeat=repeat,
                              repeat_speed=repeat_speed)
             if back_to_rest:
                 self.rest()

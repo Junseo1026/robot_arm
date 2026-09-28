@@ -3,8 +3,8 @@
   "title": "손 흔들면 인사, 머리 위로 들면 하이파이브 (v2)",
   "description": "관객이 손을 어깨~머리 높이로 들고 좌우로 흔들면 poses/gh_hello2.json 의 좌표로만 인사한다. 1~3번 → (4,5번: 좌·우 흔들기)×2 → 6·7번에서 멈춘다 (번호는 저장 순서, 1부터). 내장 대기 자세(REST)로는 가지 않는다. 손을 머리 위로 들면 gh_hello2 첫 자세 → ighfive 두 자세로 손을 내밀고, 충격(하이파이브)이 오거나 시간이 지나면 왔던 길로 첫 자세까지 돌아간다.",
   "trigger": "wave",
-  "motion": {"type": "file", "name": "gh_hello2", "repeat": [3, 5], "cycles": 2, "repeat_speed": 60, "rest": false},
-  "highfive": {"name": "ighfive", "start": "gh_hello2:0", "timeout": 5.0, "current": 0.2, "distal": 0.12},
+  "motion": {"type": "file", "name": "gh_hello2", "repeat": [3, 5], "cycles": 2, "speed": 70, "repeat_speed": 100, "rest": false},
+  "highfive": {"name": "ighfive", "start": "gh_hello2:0", "timeout": 8.4, "current": 0.2, "distal": 0.12},
   "params": {
     "speed": 40,
     "hold": 0.4,

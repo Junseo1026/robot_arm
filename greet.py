@@ -41,6 +41,11 @@ BLEND = 20.0                      # 흔들기 코너 블렌딩 반경(mm). 클�
 HF_CURRENT = 0.5                  # 하이파이브 충격으로 볼 관절 전류 변화(A). 정지 중 떨림은 0.02A 안팎
 HF_TIMEOUT = 5.0                  # 손을 내민 채 하이파이브를 기다리는 최대 시간(초)
 HF_SETTLE = 1.0                   # 손 내민 뒤 기준 전류를 재기 전 안정화 대기(초). 멈춘 직후엔 J2 전류가 흔들린다
+HF_DISTAL = 0.15                  # 손목 관절 J5 전류 변화가 이 이상이어야 손을 친 것으로 본다(A).
+                                  # 실측: 테이블 흔들림 J5 0.05~0.09 (J4 는 0.15 까지 올라 못 쓴다),
+                                  # 손 치기 J5 0.19~0.37
+HF_WINDOW = 0.4                   # 관절별 변화를 묶어 보는 시간(초). 전류 보고가 초당 5회라 관절마다
+                                  # 튀는 샘플이 다를 수 있다
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -274,11 +279,13 @@ class Greeter:
             time.sleep(0.05)
         return [sum(c) / len(c) for c in zip(*samples)]
 
-    def _wait_impact(self, timeout, threshold):
+    def _wait_impact(self, timeout, threshold, distal=HF_DISTAL):
         """지금 자세에서 손을 쳐 주기를 기다린다.
 
-        충격 = 컨트롤러 충돌 감지로 멈춤, 또는 관절 전류가 대기 기준보다 threshold(A)
-        넘게 변함. 반환: 'collision' / 'current' / None(시간 초과).
+        충격 = 컨트롤러 충돌 감지로 멈춤, 또는 최근 HF_WINDOW 초 안에 관절 전류가 대기
+        기준보다 threshold(A) 넘게 변하고 손목 관절 J5 도 distal(A) 넘게 변함.
+        J5 가 거의 안 변하면 테이블 흔들림으로 보고 무시한다.
+        반환: 'collision' / 'current' / None(시간 초과).
         """
         if self.dry_run:
             print('  [계산만] 충격 대기 최대 %.0f초' % timeout)
@@ -286,26 +293,38 @@ class Greeter:
         time.sleep(HF_SETTLE)                 # 멈춘 직후 전류가 가라앉기를 기다린다
         base = self._currents()
         peak = [0.0] * 6
-        print('  하이파이브 대기 (최대 %.0f초, 전류 변화 %.2fA 이상이면 충격)' % (timeout, threshold))
+        recent = []                           # (시각, 관절별 변화)
+        ignoring = False                      # 무시한 흔들림이 아직 이어지는 중
+        fmt = lambda d: ' '.join('J%d %.2f' % (i + 1, v) for i, v in enumerate(d))
+        print('  하이파이브 대기 (최대 %.0f초, 전류 변화 %.2fA 이상 + J5 %.2fA 이상이면 충격)'
+              % (timeout, threshold, distal))
         t0 = time.time()
         while time.time() - t0 < timeout:
+            now = time.time()
             if self.arm.error_code or self.arm.state == 4:
                 print('  충격: 컨트롤러 충돌 감지 (error=%s), 대기 %.1f초째'
-                      % (self.arm.error_code, time.time() - t0))
+                      % (self.arm.error_code, now - t0))
                 return 'collision'
             dev = [abs(c - b) for c, b in zip(self.arm.currents[:6], base)]
             peak = [max(p, d) for p, d in zip(peak, dev)]
-            if max(dev) >= threshold:
-                print('  충격: 대기 %.1f초째, 전류 변화 ' % (time.time() - t0)
-                      + ' '.join('J%d %.2f' % (i + 1, d) for i, d in enumerate(dev)))
-                return 'current'
+            recent = [(t, d) for t, d in recent if now - t <= HF_WINDOW] + [(now, dev)]
+            win = [max(d[i] for _, d in recent) for i in range(6)]
+            if max(win) >= threshold:
+                if win[4] >= distal:
+                    print('  충격: 대기 %.1f초째, 전류 변화 %s' % (now - t0, fmt(win)))
+                    return 'current'
+                if not ignoring:
+                    print('  무시: 대기 %.1f초째, J5 변화가 %.2fA 미만 '
+                          '(테이블 흔들림으로 봄) %s' % (now - t0, distal, fmt(win)))
+                    ignoring = True
+            else:
+                ignoring = False
             time.sleep(0.02)
-        print('  시간 초과. 최대 전류 변화 ' + ' '.join('J%d %.2f' % (i + 1, p)
-                                                  for i, p in enumerate(peak)))
+        print('  시간 초과. 최대 전류 변화 ' + fmt(peak))
         return None
 
     def highfive(self, name, start=None, speed=None, timeout=HF_TIMEOUT,
-                 threshold=HF_CURRENT):
+                 threshold=HF_CURRENT, distal=HF_DISTAL):
         """start -> <name> 자세들로 손을 내밀고, 하이파이브(충격)가 오면 왔던 길을
         거꾸로 되짚어 start 로 돌아간다. timeout 초 안에 충격이 없어도 돌아간다.
 
@@ -320,7 +339,7 @@ class Greeter:
                 break
             reached += 1
         if reached == len(path):
-            hit = self._wait_impact(timeout, threshold)
+            hit = self._wait_impact(timeout, threshold, distal)
             back = path[:-1]                  # 지금 path[-1] 에 있다
         else:
             print('  손 내미는 중 멈춤 (충돌 감지 등)')
@@ -402,6 +421,9 @@ def main():
                     help='highfive 에서 충격을 기다리는 최대 시간(초)')
     ap.add_argument('--current', type=float, default=HF_CURRENT,
                     help='highfive 충격으로 볼 관절 전류 변화(A)')
+    ap.add_argument('--distal', type=float, default=HF_DISTAL,
+                    help='highfive 충격으로 볼 손목 관절 J5 최소 전류 변화(A). '
+                         '이보다 작으면 테이블 흔들림으로 보고 무시')
     ap.add_argument('--repeat-speed', type=float,
                     help='play 할 때 반복 구간(흔들기)만 이 속도 deg/s. 없으면 --speed')
     ap.add_argument('--amp', type=float, default=30.0)
@@ -450,7 +472,8 @@ def main():
             start = resolve_pose(args.start) if args.start else None
             print('하이파이브 결과=%s' % g.highfive(args.name, start=start,
                                                timeout=args.timeout,
-                                               threshold=args.current))
+                                               threshold=args.current,
+                                               distal=args.distal))
         elif args.kind == 'rest':
             print('대기 자세 code=%s' % g.rest())
         elif args.kind == 'raise':

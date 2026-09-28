@@ -353,7 +353,7 @@ def main():
 
     greeter = None
     if args.robot:
-        from greet import Greeter, resolve_pose, HF_TIMEOUT, HF_CURRENT, HF_DISTAL
+        from greet import Greeter, resolve_pose, HF_TIMEOUT, HF_JUMP, HF_DISTAL
         if highfive:
             # 자세 파일을 로봇이 움직이기 전에 읽어 둔다. 없으면 여기서 멈춘다
             hf_start = resolve_pose(highfive['start']) if highfive.get('start') else None
@@ -380,8 +380,9 @@ def main():
             if kind == 'highfive':
                 greeter.highfive(highfive['name'], start=hf_start,
                                  timeout=highfive.get('timeout', HF_TIMEOUT),
-                                 threshold=highfive.get('current', HF_CURRENT),
-                                 distal=highfive.get('distal', HF_DISTAL))
+                                 jump=highfive.get('jump', HF_JUMP),
+                                 distal=highfive.get('distal', HF_DISTAL),
+                                 return_speed=highfive.get('return_speed'))
             else:
                 greeter.greet(j1_deg=j1, name=args.name, cycles=args.cycles,
                               repeat=args.repeat, repeat_speed=args.repeat_speed,

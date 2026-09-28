@@ -20,21 +20,55 @@
 
 종료는 q 또는 Ctrl+C.
 """
-import argparse, collections, os, sys, threading, time
+import argparse, collections, math, os, sys, threading, time
 
-COCO = {'nose': 0, 'l_shoulder': 5, 'r_shoulder': 6,
+COCO = {'nose': 0, 'l_eye': 1, 'r_eye': 2, 'l_shoulder': 5, 'r_shoulder': 6,
         'l_elbow': 7, 'r_elbow': 8, 'l_wrist': 9, 'r_wrist': 10}
 KP_CONF = 0.5          # 키포인트를 믿을 최소 신뢰도
+HEAD_TOP = 0.5         # 정수리 ≈ 코 위로 (어깨 폭 x 이 값). 손목이 이보다 위면 '머리 위'
+UP_GRACE = 0.5         # 손 든 게 이 시간(초) 넘게 안 보여야 유지 시간을 초기화
+WAVE_SWING = 0.15      # 흔들기로 셀 최소 되돌림 (어깨 폭 대비). 작을수록 덜 흔들어도 인식
 
 FONT_PATH = '/System/Library/Fonts/AppleSDGothicNeo.ttc'
 
 
-def _up(kp, conf, side):
-    """해당 쪽 손목이 어깨보다 위에 있는지. 신뢰도가 낮으면 None."""
+def _shoulders(kp, conf):
+    """(어깨 중심 x, 어깨 폭 px). 양 어깨 신뢰도가 낮으면 None."""
+    ls, rs = COCO['l_shoulder'], COCO['r_shoulder']
+    if conf[ls] < KP_CONF or conf[rs] < KP_CONF:
+        return None
+    sw = math.hypot(kp[ls][0] - kp[rs][0], kp[ls][1] - kp[rs][1])
+    if sw < 1e-3:
+        return None
+    return (kp[ls][0] + kp[rs][0]) / 2, sw
+
+
+def _head_top_y(kp, conf, sw):
+    """정수리 y 추정: 코(없으면 눈)에서 어깨 폭 x HEAD_TOP 만큼 위. 얼굴이 안 보이면 None."""
+    for names in (('nose',), ('l_eye', 'r_eye')):
+        ys = [kp[COCO[n]][1] for n in names if conf[COCO[n]] >= KP_CONF]
+        if ys:
+            return min(ys) - HEAD_TOP * sw
+    return None
+
+
+def hand_zone(kp, conf, side):
+    """한쪽 손의 높이 구간: 'down' / 'up'(어깨~머리) / 'over_head' / None(판정불가).
+
+    이미지 좌표는 y 가 아래로 커지므로 '위' 는 y 가 작은 쪽이다.
+    인사(hello)는 'up', 하이파이브는 'over_head' 로 가른다. 손을 들었는데 얼굴이나
+    양 어깨가 안 보이면 머리 위인지 가를 수 없으므로 None 이다.
+    """
     w, sh = COCO['%s_wrist' % side], COCO['%s_shoulder' % side]
     if conf[w] < KP_CONF or conf[sh] < KP_CONF:
         return None
-    return kp[w][1] < kp[sh][1]
+    if kp[w][1] >= kp[sh][1]:
+        return 'down'
+    s = _shoulders(kp, conf)
+    head = _head_top_y(kp, conf, s[1]) if s else None
+    if head is None:
+        return None
+    return 'over_head' if kp[w][1] < head else 'up'
 
 
 def metrics(kp, conf):
@@ -44,6 +78,7 @@ def metrics(kp, conf):
         카메라 쪽으로 손을 내밀면 전완이 카메라 축과 나란해져 화면상 짧아진다.
         좌우로 흔드는 손은 카메라와 수직이라 제 길이로 보인다.
     wrist_up: (어깨 y - 손목 y) / 어깨 폭. 클수록 손이 머리 쪽으로 높다.
+    over_nose: (코 y - 손목 y) / 어깨 폭. HEAD_TOP 보다 크면 '머리 위'.
     """
     import numpy as np
     ls, rs = COCO['l_shoulder'], COCO['r_shoulder']
@@ -52,6 +87,7 @@ def metrics(kp, conf):
     sw = float(np.linalg.norm(kp[ls] - kp[rs]))
     if sw < 1e-3:
         return None
+    nose = COCO['nose']
     out = {}
     for side in ('l', 'r'):
         e, w, sh = (COCO['%s_elbow' % side], COCO['%s_wrist' % side],
@@ -61,71 +97,66 @@ def metrics(kp, conf):
         out[side] = {
             'forearm': float(np.linalg.norm(kp[w] - kp[e])) / sw,
             'wrist_up': float(kp[sh][1] - kp[w][1]) / sw,
+            'over_nose': (float(kp[nose][1] - kp[w][1]) / sw
+                          if conf[nose] >= KP_CONF else None),
         }
     return {'shoulder_px': sw, 'sides': out} if out else None
 
 
-def classify(kp, conf, waving):
-    """키포인트로 포즈를 분류한다. (한글 라벨, 화면용 ASCII 라벨) 를 돌려준다."""
-    l, r = _up(kp, conf, 'l'), _up(kp, conf, 'r')
-    if l is None and r is None:
+def classify(zones, waving):
+    """손 높이 구간으로 포즈를 분류한다. (한글 라벨, 화면용 ASCII 라벨) 를 돌려준다."""
+    vals = [z for z in zones.values() if z is not None]
+    if not vals:
         return '판정불가', 'UNKNOWN'
-    if l and r:
+    if 'over_head' in vals:
+        return '머리 위로 들기', 'HAND OVER HEAD'
+    if vals.count('up') == 2:
         return '양손 들기', 'BOTH HANDS UP'
-    if l or r:
-        if waving:
-            return '손 흔들기', 'WAVING'
-        return '손 들기', 'HAND UP'
+    if 'up' in vals:
+        return ('손 흔들기', 'WAVING') if waving else ('손 들기', 'HAND UP')
     return '서 있음', 'STANDING'
 
 
-def hand_raised(kp, conf):
-    """손목이 어깨보다 위에 있으면 손을 든 것으로 본다.
-
-    이미지 좌표는 y 가 아래로 커지므로 '위' 는 y 가 작은 쪽이다.
-    반환: (들었는지, 어느 손, 손목 x 정규화 전 픽셀좌표)
-    """
-    for side in ('l', 'r'):
-        w, s = COCO['%s_wrist' % side], COCO['%s_shoulder' % side]
-        if conf[w] < KP_CONF or conf[s] < KP_CONF:
-            continue
-        if kp[w][1] < kp[s][1]:
-            return True, side, kp[w]
-    return False, None, None
-
-
 class WaveWatcher:
-    """손목 x 좌표의 좌우 진동을 보고 흔드는지 판정한다. 모델이 필요 없다."""
+    """손목의 좌우 왕복을 보고 흔드는지 판정한다. 모델이 필요 없다.
 
-    def __init__(self, window=1.5, min_amp=0.03, min_turns=2):
+    x 는 어깨 중심 기준, 어깨 폭 단위로 받는다. 그래서 몸이 통째로 움직이는 건
+    빠지고 사람까지의 거리와도 무관하다. 키포인트 떨림을 방향 전환으로 세지 않도록
+    직전 극값에서 min_swing 이상 되돌아올 때만 한 번으로 센다.
+    """
+
+    def __init__(self, window=2.0, min_swing=WAVE_SWING, min_turns=2):
         self.window = window        # 초
-        self.min_amp = min_amp      # 화면 폭 대비 진폭
-        self.min_turns = min_turns  # 방향 전환 횟수
+        self.min_swing = min_swing  # 방향 전환으로 셀 최소 되돌림 (어깨 폭 대비)
+        self.min_turns = min_turns  # 방향 전환 횟수. 2 = 좌-우-좌
         self.hist = collections.defaultdict(collections.deque)
 
-    def update(self, tid, x_norm, now):
-        h = self.hist[tid]
-        h.append((now, x_norm))
+    def update(self, key, x, now):
+        h = self.hist[key]
+        h.append((now, x))
         while h and now - h[0][0] > self.window:
             h.popleft()
-        if len(h) < 5:
-            return False
-        xs = [x for _, x in h]
-        if max(xs) - min(xs) < self.min_amp:
-            return False
-        turns, prev = 0, None
-        for a, b in zip(xs, xs[1:]):
-            d = b - a
-            if abs(d) < 1e-4:
-                continue
-            sign = d > 0
-            if prev is not None and sign != prev:
+        turns, direction = 0, 0
+        lo = hi = ext = h[0][1]
+        for _, v in h:
+            if direction == 0:
+                lo, hi = min(lo, v), max(hi, v)
+                if hi - lo >= self.min_swing:
+                    direction = 1 if v == hi else -1
+                    ext = v
+            elif (v - ext) * direction > 0:
+                ext = v
+            elif abs(v - ext) >= self.min_swing:
                 turns += 1
-            prev = sign
+                direction, ext = -direction, v
         return turns >= self.min_turns
 
-    def forget(self, tid):
-        self.hist.pop(tid, None)
+    def forget(self, key):
+        self.hist.pop(key, None)
+
+    def forget_track(self, tid):
+        for k in [k for k in self.hist if k[0] == tid]:
+            del self.hist[k]
 
 
 _font_cache = {}
@@ -181,6 +212,8 @@ def main():
     ap.add_argument('--repeat', type=int, nargs=2, metavar=('시작', '끝'),
                     help='--name 동작에서 반복할 구간. 0 부터 세고 끝은 제외. '
                          '예: --repeat 4 6 이면 4,5번 자세를 반복')
+    ap.add_argument('--no-highfive', action='store_true',
+                    help='시나리오에 highfive 가 있어도 머리 위 손에 반응하지 않는다')
     ap.add_argument('--repeat-speed', type=float,
                     help='--repeat 구간(흔들기)만 이 속도 deg/s. 없으면 --speed')
     ap.add_argument('--no-rest', action='store_true', default=None,
@@ -251,6 +284,8 @@ def main():
             args.no_rest = True
         if args.trigger is None:
             args.trigger = cfg.get('trigger')
+    # 머리 위로 손을 들면 하는 하이파이브. 시나리오에 highfive 가 있을 때만 켠다
+    highfive = None if args.no_highfive else cfg.get('highfive')
 
     for key, default in (('conf', 0.4), ('speed', 20.0), ('hold', 0.4),
                          ('cooldown', 8.0), ('j1_span', 45.0)):
@@ -313,7 +348,11 @@ def main():
 
     greeter = None
     if args.robot:
-        from greet import Greeter
+        from greet import Greeter, resolve_pose, HF_TIMEOUT, HF_CURRENT
+        if highfive:
+            # 자세 파일을 로봇이 움직이기 전에 읽어 둔다. 없으면 여기서 멈춘다
+            hf_start = resolve_pose(highfive['start']) if highfive.get('start') else None
+            resolve_pose(highfive['name'] + ':0')
         greeter = Greeter(speed=args.speed, dry_run=args.dry_run,
                           go_rest=not args.no_rest)
         print('로봇 연결됨%s' % (' (dry-run: 움직이지 않음)' if args.dry_run else
@@ -323,18 +362,26 @@ def main():
 
     need_wave = (args.trigger == 'wave')
     print('트리거: %s' % ('손을 좌우로 흔들 때' if need_wave else '손을 들 때'))
+    print('하이파이브: %s' % ('머리 위로 손을 들 때 (%s, 시작 %s)'
+                             % (highfive['name'], highfive.get('start'))
+                             if highfive else '꺼짐'))
 
     # 인사는 몇 초가 걸린다. 별도 스레드로 돌려 카메라 루프가 멈추지 않게 한다.
     busy = threading.Event()
     worker = [None]
 
-    def do_greet(j1, tid):
+    def do_greet(kind, j1):
         try:
-            greeter.greet(j1_deg=j1, name=args.name, cycles=args.cycles,
-                          repeat=args.repeat, repeat_speed=args.repeat_speed,
-                          back_to_rest=not args.no_rest)
+            if kind == 'highfive':
+                greeter.highfive(highfive['name'], start=hf_start,
+                                 timeout=highfive.get('timeout', HF_TIMEOUT),
+                                 threshold=highfive.get('current', HF_CURRENT))
+            else:
+                greeter.greet(j1_deg=j1, name=args.name, cycles=args.cycles,
+                              repeat=args.repeat, repeat_speed=args.repeat_speed,
+                              back_to_rest=not args.no_rest)
         except Exception as e:
-            print('인사 중 오류: %s' % e)
+            print('%s 중 오류: %s' % ('하이파이브' if kind == 'highfive' else '인사', e))
         finally:
             busy.clear()
 
@@ -342,6 +389,9 @@ def main():
     last_label = {}     # track id -> 마지막으로 출력한 분류값
     last_print = 0.0
     since = {}          # track id -> 조건이 만족되기 시작한 시각
+    last_up = {}        # track id -> 마지막으로 손 든 게 보인 시각
+    hf_since = {}       # track id -> 머리 위로 손 든 게 시작된 시각
+    last_over = {}      # track id -> 마지막으로 머리 위 손이 보인 시각
     last_greet = {}     # track id -> 마지막 인사 시각
     fps_t, fps_n, fps = time.time(), 0, 0.0
 
@@ -358,7 +408,7 @@ def main():
                               device=device, imgsz=args.imgsz,
                               tracker=args.tracker)[0]
 
-            target = None       # (면적, track id, j1 각도, 어느 손)
+            target = None       # (면적, track id, j1 각도, 어느 손, 'hello'|'highfive')
             seen = set()
             labels = {}         # track id -> (한글 라벨, ASCII 라벨, 박스)
             if res.keypoints is not None and res.boxes is not None:
@@ -373,12 +423,27 @@ def main():
                     tid = int(tid)
                     seen.add(tid)
                     conf = kcf[i] if kcf is not None else [1.0] * len(kps[i])
-                    up, side, wrist = hand_raised(kps[i], conf)
+                    zones = {s: hand_zone(kps[i], conf, s) for s in ('l', 'r')}
+                    sh = _shoulders(kps[i], conf)
 
-                    # 손을 들었을 때만 흔들림을 본다 (손목 x 진동)
-                    waving = (watcher.update(tid, wrist[0] / w, now)
-                              if up else False)
-                    label_ko, label_en = classify(kps[i], conf, waving)
+                    # 어깨~머리 높이로 든 손만 흔들림을 본다 (어깨 기준 손목 x 왕복).
+                    # 머리 위로 든 손은 하이파이브용이라 인사하지 않는다.
+                    # 판정불가(None) 프레임은 건너뛰기만 한다. 키포인트 신뢰도가 프레임마다
+                    # 깜빡이므로 여기서 기록을 지우면 흔들기가 쌓이지 않는다.
+                    wave_side = None
+                    for s in ('l', 'r'):
+                        if zones[s] in ('down', 'over_head'):
+                            watcher.forget((tid, s))
+                        if zones[s] != 'up':
+                            continue
+                        x = (kps[i][COCO['%s_wrist' % s]][0] - sh[0]) / sh[1]
+                        if watcher.update((tid, s), x, now) and wave_side is None:
+                            wave_side = s
+                    waving = wave_side is not None
+                    up_side = next((s for s in ('l', 'r') if zones[s] == 'up'), None)
+                    up = up_side is not None
+                    side = wave_side or up_side
+                    label_ko, label_en = classify(zones, waving)
                     labels[tid] = (label_ko, label_en, boxes[i])
 
                     # 터미널 출력: 바뀔 때만, 또는 --every 간격마다
@@ -392,12 +457,14 @@ def main():
                     if show_line and args.metrics:
                         m = metrics(kps[i], conf)
                         if m is None:
-                            print('[%s] id=%-2d %-10s  어깨 키포인트 신뢰도 낮음'
+                            print('[%s] id=%-2d %-10s  어깨/팔꿈치 키포인트 신뢰도 낮음'
                                   % (time.strftime('%H:%M:%S'), tid, label_ko))
                         else:
-                            parts = ['%s: 전완%.2f 손높이%+.2f' %
+                            parts = ['%s: 전완%.2f 손높이%+.2f 코위%s' %
                                      ('왼' if k == 'l' else '오른',
-                                      v['forearm'], v['wrist_up'])
+                                      v['forearm'], v['wrist_up'],
+                                      '%+.2f' % v['over_nose']
+                                      if v['over_nose'] is not None else '?')
                                      for k, v in m['sides'].items()]
                             print('[%s] id=%-2d %-10s  어깨폭%4.0fpx  %s  흔듦=%s'
                                   % (time.strftime('%H:%M:%S'), tid, label_ko,
@@ -412,13 +479,33 @@ def main():
                                  kps[i][rw][1], kps[i][rs][1], waving))
                     last_label[tid] = label_ko
 
-                    if not up:
+                    over_side = next((s for s in ('l', 'r')
+                                      if zones[s] == 'over_head'), None)
+
+                    # 판정불가가 한두 프레임 끼는 건 봐준다. 손 든 상태가 UP_GRACE 초 넘게
+                    # 끊겼을 때만 유지 시간을 초기화한다.
+                    if up:
+                        last_up[tid] = now
+                    elif now - last_up.get(tid, 0) > UP_GRACE:
                         since.pop(tid, None)
-                        continue
-                    if need_wave and not waving:
-                        continue
-                    since.setdefault(tid, now)
-                    if now - since[tid] < args.hold:
+                    if over_side:
+                        last_over[tid] = now
+                    elif now - last_over.get(tid, 0) > UP_GRACE:
+                        hf_since.pop(tid, None)
+
+                    # 한 손이라도 머리 위면 하이파이브 자세다. 다른 손이 흔들어도 인사하지 않는다.
+                    if over_side:
+                        since.pop(tid, None)
+                        if not highfive:
+                            continue
+                        kind, side = 'highfive', over_side
+                        started = hf_since.setdefault(tid, now)
+                    else:
+                        if not up or (need_wave and not waving):
+                            continue
+                        kind = 'hello'
+                        started = since.setdefault(tid, now)
+                    if now - started < args.hold:
                         continue
                     if now - last_greet.get(tid, 0) < args.cooldown:
                         continue
@@ -427,7 +514,7 @@ def main():
                     cx = (x1 + x2) / 2 / w - 0.5
                     j1 = (cx if args.flip_j1 else -cx) * 2 * args.j1_span
                     if target is None or area > target[0]:
-                        target = (area, tid, j1, side)
+                        target = (area, tid, j1, side, kind)
 
             if args.every > 0 and now - last_print >= args.every:
                 last_print = now
@@ -438,19 +525,28 @@ def main():
                 if tid not in seen:
                     since.pop(tid, None)
                     last_label.pop(tid, None)
-                    watcher.forget(tid)
+                    last_up.pop(tid, None)
+                    hf_since.pop(tid, None)
+                    last_over.pop(tid, None)
+                    watcher.forget_track(tid)
 
             if target and not busy.is_set():
-                _, tid, j1, side = target
+                _, tid, j1, side, kind = target
                 last_greet[tid] = now
                 since.pop(tid, None)
-                print('[%s] id=%d %s손 %s -> J1=%+.0f 도로 인사'
-                      % (time.strftime('%H:%M:%S'), tid,
-                         '왼' if side == 'l' else '오른',
-                         '흔듦' if need_wave else '들었음', j1))
+                hf_since.pop(tid, None)
+                if kind == 'highfive':
+                    print('[%s] id=%d %s손 머리 위 -> 하이파이브'
+                          % (time.strftime('%H:%M:%S'), tid,
+                             '왼' if side == 'l' else '오른'))
+                else:
+                    print('[%s] id=%d %s손 %s -> J1=%+.0f 도로 인사'
+                          % (time.strftime('%H:%M:%S'), tid,
+                             '왼' if side == 'l' else '오른',
+                             '흔듦' if need_wave else '들었음', j1))
                 if greeter:
                     busy.set()
-                    worker[0] = threading.Thread(target=do_greet, args=(j1, tid),
+                    worker[0] = threading.Thread(target=do_greet, args=(kind, j1),
                                                  daemon=True)
                     worker[0].start()
 
@@ -462,13 +558,13 @@ def main():
                 vis = res.plot()
                 for tid, (ko, en, box) in labels.items():
                     x1, y1 = int(box[0]), int(box[1])
-                    color = (0, 255, 255) if ko in ('손 흔들기', '손 들기',
-                                                    '양손 들기') else (0, 255, 0)
+                    color = (0, 255, 255) if ko in ('손 흔들기', '손 들기', '양손 들기',
+                                                    '머리 위로 들기') else (0, 255, 0)
                     vis = draw_label(vis, 'id%d %s' % (tid, ko),
                                      (x1, max(0, y1 - 28)), color)
                 state = '감지 전용'
                 if greeter:
-                    state = '인사 중' if busy.is_set() else '대기 중'
+                    state = '동작 중' if busy.is_set() else '대기 중'
                 vis = draw_label(vis, '%.1f fps   %s   트리거=%s' %
                                  (fps, state, '흔들기' if need_wave else '손들기'),
                                  (10, 8),

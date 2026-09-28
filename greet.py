@@ -38,6 +38,9 @@ RAISE = [0, -60, -30, 0,  0, 0]   # 인사: 툴 Z축이 정면 수평, 손바닥
 
 J1_LIMIT = 60.0                   # 사람 쪽으로 돌릴 수 있는 최대 각도
 BLEND = 20.0                      # 흔들기 코너 블렌딩 반경(mm). 클수록 부드럽고 진폭이 줄어든다
+HF_CURRENT = 0.5                  # 하이파이브 충격으로 볼 관절 전류 변화(A). 정지 중 떨림은 0.02A 안팎
+HF_TIMEOUT = 5.0                  # 손을 내민 채 하이파이브를 기다리는 최대 시간(초)
+HF_SETTLE = 1.0                   # 손 내민 뒤 기준 전류를 재기 전 안정화 대기(초). 멈춘 직후엔 J2 전류가 흔들린다
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -87,6 +90,13 @@ def load_waypoints(name):
     if not angles:
         raise ValueError('%s 에 웨이포인트가 없음' % path)
     return angles, data.get('repeat_from')
+
+
+def resolve_pose(ref):
+    """'<이름>:<인덱스>' 를 관절각으로 바꾼다. 예: 'gh_hello2:0' (인덱스는 0 부터)."""
+    name, idx = ref.rsplit(':', 1)
+    angles, _ = load_waypoints(name)
+    return angles[int(idx)]
 
 
 class Greeter:
@@ -242,6 +252,88 @@ class Greeter:
             self.rest()
         return 0
 
+    def _recover(self):
+        """충돌 감지 등으로 멈춰 있으면 에러를 지우고 다시 움직일 수 있게 한다."""
+        arm = self.arm
+        if self.dry_run or (not arm.error_code and arm.state != 4):
+            return False
+        print('  로봇 정지 상태 (error=%s, state=%s) -> 복구' % (arm.error_code, arm.state))
+        arm.clean_error()
+        arm.clean_warn()
+        arm.motion_enable(True)
+        arm.set_mode(0)
+        arm.set_state(0)
+        time.sleep(0.5)
+        return True
+
+    def _currents(self, duration=0.6):
+        """duration 초 동안 관절 전류(A) 평균. 컨트롤러 보고가 초당 5회라 짧게 잡지 않는다."""
+        samples, t0 = [], time.time()
+        while time.time() - t0 < duration:
+            samples.append(list(self.arm.currents[:6]))
+            time.sleep(0.05)
+        return [sum(c) / len(c) for c in zip(*samples)]
+
+    def _wait_impact(self, timeout, threshold):
+        """지금 자세에서 손을 쳐 주기를 기다린다.
+
+        충격 = 컨트롤러 충돌 감지로 멈춤, 또는 관절 전류가 대기 기준보다 threshold(A)
+        넘게 변함. 반환: 'collision' / 'current' / None(시간 초과).
+        """
+        if self.dry_run:
+            print('  [계산만] 충격 대기 최대 %.0f초' % timeout)
+            return None
+        time.sleep(HF_SETTLE)                 # 멈춘 직후 전류가 가라앉기를 기다린다
+        base = self._currents()
+        peak = [0.0] * 6
+        print('  하이파이브 대기 (최대 %.0f초, 전류 변화 %.2fA 이상이면 충격)' % (timeout, threshold))
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if self.arm.error_code or self.arm.state == 4:
+                print('  충격: 컨트롤러 충돌 감지 (error=%s), 대기 %.1f초째'
+                      % (self.arm.error_code, time.time() - t0))
+                return 'collision'
+            dev = [abs(c - b) for c, b in zip(self.arm.currents[:6], base)]
+            peak = [max(p, d) for p, d in zip(peak, dev)]
+            if max(dev) >= threshold:
+                print('  충격: 대기 %.1f초째, 전류 변화 ' % (time.time() - t0)
+                      + ' '.join('J%d %.2f' % (i + 1, d) for i, d in enumerate(dev)))
+                return 'current'
+            time.sleep(0.02)
+        print('  시간 초과. 최대 전류 변화 ' + ' '.join('J%d %.2f' % (i + 1, p)
+                                                  for i, p in enumerate(peak)))
+        return None
+
+    def highfive(self, name, start=None, speed=None, timeout=HF_TIMEOUT,
+                 threshold=HF_CURRENT):
+        """start -> <name> 자세들로 손을 내밀고, 하이파이브(충격)가 오면 왔던 길을
+        거꾸로 되짚어 start 로 돌아간다. timeout 초 안에 충격이 없어도 돌아간다.
+
+        저장한 좌표로만 움직인다. 반환: 'collision' / 'current' / None(시간 초과).
+        """
+        angles, _ = load_waypoints(name)
+        path = ([list(start)] if start is not None else []) + angles
+        print('하이파이브 %s: %d개 자세로 손 내밀기' % (name, len(path)))
+        reached = 0
+        for a in path:
+            if self._move(a, speed=speed) != 0:
+                break
+            reached += 1
+        if reached == len(path):
+            hit = self._wait_impact(timeout, threshold)
+            back = path[:-1]                  # 지금 path[-1] 에 있다
+        else:
+            print('  손 내미는 중 멈춤 (충돌 감지 등)')
+            hit = 'collision'
+            back = path[:reached]             # path[reached-1] 과 path[reached] 사이에 있다
+        self._recover()
+        print('  원래 자리로 복귀')
+        for a in reversed(back):
+            if self._move(a, speed=speed) != 0:
+                print('  복귀 중 멈춤. greet.py rest 대신 jog.py 로 자세를 확인해줘')
+                break
+        return hit
+
     def bow(self, j1_deg=0.0, depth=20.0):
         """고개 숙이는 느낌의 인사. 손을 든 뒤 팔 전체를 앞으로 굽힌다."""
         base = self.raise_hand(j1_deg)
@@ -297,13 +389,19 @@ class Greeter:
 def main():
     ap = argparse.ArgumentParser(description='xArm6 인사 동작')
     ap.add_argument('kind', nargs='?', default='wave',
-                    choices=['wave', 'big', 'small', 'bow', 'random', 'rest', 'raise', 'play'])
+                    choices=['wave', 'big', 'small', 'bow', 'random', 'rest', 'raise', 'play',
+                             'highfive'])
     ap.add_argument('--name', help="play 할 때 poses/<이름>.json 지정")
     ap.add_argument('--list', action='store_true', help='저장된 동작 목록만 보고 종료')
     ap.add_argument('--j1', type=float, default=0.0, help='사람 방향 각도 (deg)')
     ap.add_argument('--cycles', type=int, default=3)
     ap.add_argument('--repeat', type=int, nargs=2, metavar=('시작', '끝'),
                     help='play 할 때 반복 구간. 0 부터 세고 끝은 제외. 예: --repeat 4 6')
+    ap.add_argument('--start', help="highfive 시작 자세 '<이름>:<인덱스>'. 예: gh_hello2:0")
+    ap.add_argument('--timeout', type=float, default=HF_TIMEOUT,
+                    help='highfive 에서 충격을 기다리는 최대 시간(초)')
+    ap.add_argument('--current', type=float, default=HF_CURRENT,
+                    help='highfive 충격으로 볼 관절 전류 변화(A)')
     ap.add_argument('--repeat-speed', type=float,
                     help='play 할 때 반복 구간(흔들기)만 이 속도 deg/s. 없으면 --speed')
     ap.add_argument('--amp', type=float, default=30.0)
@@ -335,7 +433,7 @@ def main():
         return
 
     g = Greeter(speed=args.speed,
-                go_rest=(args.kind != 'rest' and not args.no_start_rest),
+                go_rest=(args.kind not in ('rest', 'highfive') and not args.no_start_rest),
                 dry_run=args.dry_run, step=args.step)
     try:
       try:
@@ -345,6 +443,14 @@ def main():
             print('재생 code=%s' % g.play(args.name, cycles=args.cycles,
                                          repeat=args.repeat,
                                          repeat_speed=args.repeat_speed))
+        elif args.kind == 'highfive':
+            if not args.name:
+                ap.error('highfive 는 --name 이 필요해. 예: greet.py highfive --name ighfive '
+                         '--start gh_hello2:0')
+            start = resolve_pose(args.start) if args.start else None
+            print('하이파이브 결과=%s' % g.highfive(args.name, start=start,
+                                               timeout=args.timeout,
+                                               threshold=args.current))
         elif args.kind == 'rest':
             print('대기 자세 code=%s' % g.rest())
         elif args.kind == 'raise':
@@ -356,7 +462,7 @@ def main():
             print('인사 code=%s kind=%s' % g.greet(args.j1))
         else:
             print('인사 code=%s kind=%s' % g.greet(args.j1, kind=args.kind))
-        if not args.stay and args.kind not in ('rest', 'raise'):
+        if not args.stay and args.kind not in ('rest', 'raise', 'highfive'):
             g.rest()
       except KeyboardInterrupt:
         # Ctrl+C 만으로는 컨트롤러 큐에 쌓인 동작이 계속 실행된다.
